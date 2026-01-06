@@ -411,9 +411,7 @@ const updateStopStyles = () => {
     if (!map || stopMarkersById.size === 0) return;
     const selectedStopId = selectedStop.value?.stop_id ?? null;
     stopMarkersById.forEach((marker, stopId) => {
-        marker.setStyle(
-            getStopMarkerStyle(stopId, selectedStopId === stopId),
-        );
+        marker.setStyle(getStopMarkerStyle(stopId, selectedStopId === stopId));
     });
 };
 
@@ -1812,7 +1810,8 @@ onBeforeUnmount(() => {
 }
 
 :global(.vehicle-marker.is-selected .vehicle-dot) {
-    box-shadow: 0 6px 12px rgba(15, 23, 42, 0.35),
+    box-shadow:
+        0 6px 12px rgba(15, 23, 42, 0.35),
         0 0 0 3px rgba(253, 230, 138, 0.9);
 }
 
