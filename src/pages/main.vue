@@ -101,6 +101,7 @@ type LeafletMap = {
         bounds: unknown,
         options?: { padding?: [number, number] },
     ) => void;
+    createPane: (name: string) => { style: { zIndex: string } };
     remove: () => void;
     removeLayer: (layer: unknown) => void;
 };
@@ -113,6 +114,12 @@ type LeafletMarker = {
 };
 
 type LeafletLayer = any;
+type LeafletCircleMarker = any;
+
+type LatLng = {
+    lat: number;
+    lon: number;
+};
 
 const mapEl = ref<HTMLDivElement | null>(null);
 const selectedVehicle = ref<Vehicle | null>(null);
@@ -149,6 +156,7 @@ const stopTimesByStopId = ref<Map<number, Set<string>>>(new Map());
 const stopAnalyticsCache = ref<Map<number, StopAnalytics>>(new Map());
 const stopAnalyticsState = ref<"idle" | "loading" | "error">("idle");
 const stopAnalyticsError = ref<string | null>(null);
+const selectedStopId = computed(() => selectedStop.value?.stop_id);
 
 let map: LeafletMap | null = null;
 let refreshTimer: number | null = null;
@@ -156,8 +164,12 @@ let tickTimer: number | null = null;
 let didFitBounds = false;
 const markersById = new Map<number, LeafletMarker>();
 const vehiclesById = new Map<number, Vehicle>();
+const lastPositionsById = new Map<number, LatLng>();
+const lastBearingsById = new Map<number, number>();
+const stopMarkersById = new Map<number, LeafletCircleMarker>();
 const routeLayers: LeafletLayer[] = [];
 const stopLayers: LeafletLayer[] = [];
+let lastSelectedStopId: number | null = null;
 
 const apiUrl = "/api/proxy/vehicles";
 const routesUrl = "/api/proxy/routes";
@@ -199,12 +211,103 @@ const getVehicleColor = (vehicle: Vehicle) => {
     return "#dc2626";
 };
 
-const createVehicleIcon = (vehicle: Vehicle) => {
+const toRad = (deg: number) => (deg * Math.PI) / 180;
+const toDeg = (rad: number) => (rad * 180) / Math.PI;
+
+const computeBearing = (
+    fromLat: number,
+    fromLon: number,
+    toLat: number,
+    toLon: number,
+) => {
+    const phi1 = toRad(fromLat);
+    const phi2 = toRad(toLat);
+    const delta = toRad(toLon - fromLon);
+    const y = Math.sin(delta) * Math.cos(phi2);
+    const x =
+        Math.cos(phi1) * Math.sin(phi2) -
+        Math.sin(phi1) * Math.cos(phi2) * Math.cos(delta);
+    const bearing = Math.atan2(y, x);
+    return (toDeg(bearing) + 360) % 360;
+};
+
+const computeBearingFromShape = (
+    lat: number,
+    lon: number,
+    points: ShapePoint[],
+) => {
+    if (points.length < 2) return null;
+    const lat0 = toRad(lat);
+    const cosLat0 = Math.cos(lat0);
+    const point = {
+        x: toRad(lon) * cosLat0,
+        y: toRad(lat),
+    };
+
+    let bestStart: ShapePoint | null = null;
+    let bestEnd: ShapePoint | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (let i = 0; i < points.length - 1; i += 1) {
+        const start = points[i]!;
+        const end = points[i + 1]!;
+        const startX = toRad(start.shape_pt_lon) * cosLat0;
+        const startY = toRad(start.shape_pt_lat);
+        const endX = toRad(end.shape_pt_lon) * cosLat0;
+        const endY = toRad(end.shape_pt_lat);
+        const dx = endX - startX;
+        const dy = endY - startY;
+        let t = 0;
+        if (dx !== 0 || dy !== 0) {
+            t =
+                ((point.x - startX) * dx + (point.y - startY) * dy) /
+                (dx * dx + dy * dy);
+            if (t < 0) t = 0;
+            if (t > 1) t = 1;
+        }
+        const projX = startX + t * dx;
+        const projY = startY + t * dy;
+        const distX = point.x - projX;
+        const distY = point.y - projY;
+        const distance = distX * distX + distY * distY;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestStart = start;
+            bestEnd = end;
+        }
+    }
+
+    if (!bestStart || !bestEnd) return null;
+    return computeBearing(
+        bestStart.shape_pt_lat,
+        bestStart.shape_pt_lon,
+        bestEnd.shape_pt_lat,
+        bestEnd.shape_pt_lon,
+    );
+};
+
+const getVehicleRouteBearing = (vehicle: Vehicle) => {
+    if (!vehicle.trip_id) return null;
+    const trip = tripById.value.get(vehicle.trip_id);
+    if (!trip) return null;
+    const points = shapesById.value.get(trip.shape_id);
+    if (!points) return null;
+    return computeBearingFromShape(vehicle.latitude, vehicle.longitude, points);
+};
+
+const createVehicleIcon = (
+    vehicle: Vehicle,
+    bearing: number | null,
+    isSelected: boolean,
+) => {
     const color = getVehicleColor(vehicle);
     const L = window.L;
+    const rotation = bearing ?? 0;
+    const unknownClass = bearing === null ? " is-unknown" : "";
+    const selectedClass = isSelected ? " is-selected" : "";
     return L.divIcon({
         className: "vehicle-icon",
-        html: `<span class="vehicle-dot" style="background:${color};"></span>`,
+        html: `<span class="vehicle-marker${unknownClass}${selectedClass}" style="--vehicle-color:${color};--vehicle-rotation:${rotation}deg;"><span class="vehicle-arrow"></span><span class="vehicle-dot"></span></span>`,
         iconSize: [16, 16],
         iconAnchor: [8, 8],
     });
@@ -235,30 +338,42 @@ const addPolyline = (points: ShapePoint[], color: string) => {
 const clearStopLayers = () => {
     if (!map) return;
     stopLayers.splice(0).forEach((layer) => map?.removeLayer(layer));
+    stopMarkersById.clear();
+};
+
+const isStopDimmed = (stopId: number) => {
+    const shouldDim = !showAllRoutes.value && selectedRouteIds.value.length > 0;
+    const canCheckStops = stopTimesByStopId.value.size > 0;
+    if (!shouldDim || !canCheckStops) return false;
+    const selectedSet = new Set(selectedRouteIds.value);
+    const stopRouteIds = getStopRouteIds(stopId);
+    return !stopRouteIds.some((routeId) => selectedSet.has(routeId));
+};
+
+const getStopMarkerStyle = (stopId: number, isSelected: boolean) => {
+    const dimStop = isStopDimmed(stopId);
+    return {
+        radius: isSelected ? 7 : 5,
+        color: "#0f172a",
+        weight: isSelected ? 2.5 : dimStop ? 1 : 1.5,
+        fillColor: isSelected ? "#fde68a" : "#ffffff",
+        opacity: dimStop ? 0.6 : 0.9,
+        fillOpacity: dimStop ? 0.6 : isSelected ? 0.95 : 0.9,
+        pane: "stops",
+    };
 };
 
 const addAllStops = () => {
     if (!map || stopsById.value.size === 0) return;
     clearStopLayers();
     const L = window.L;
-    const shouldDim = !showAllRoutes.value && selectedRouteIds.value.length > 0;
-    const selectedSet = new Set(selectedRouteIds.value);
-    const canCheckStops = stopTimesByStopId.value.size > 0;
+    const selectedStopId = selectedStop.value?.stop_id ?? null;
     stopsById.value.forEach((stop) => {
-        let dimStop = false;
-        if (shouldDim && canCheckStops) {
-            const stopRouteIds = getStopRouteIds(stop.stop_id);
-            dimStop = !stopRouteIds.some((routeId) => selectedSet.has(routeId));
-        }
-        const marker = L.circleMarker([stop.stop_lat, stop.stop_lon], {
-            radius: 5,
-            color: "#0f172a",
-            weight: dimStop ? 1 : 1.5,
-            fillColor: "#ffffff",
-            opacity: dimStop ? 0.6 : 0.9,
-            fillOpacity: dimStop ? 0.6 : 0.9,
-            pane: "stops",
-        });
+        const isSelected = selectedStopId === stop.stop_id;
+        const marker = L.circleMarker(
+            [stop.stop_lat, stop.stop_lon],
+            getStopMarkerStyle(stop.stop_id, isSelected),
+        );
         marker.bindTooltip(stop.stop_name, { direction: "top" });
         marker.on("click", () => {
             selectedStop.value = stop;
@@ -267,6 +382,38 @@ const addAllStops = () => {
         });
         marker.addTo(map);
         stopLayers.push(marker);
+        stopMarkersById.set(stop.stop_id, marker);
+    });
+    lastSelectedStopId = selectedStopId;
+};
+
+const updateSelectedStopHighlight = () => {
+    const nextId = selectedStop.value?.stop_id ?? null;
+    if (nextId === lastSelectedStopId) return;
+    if (lastSelectedStopId !== null) {
+        const previousMarker = stopMarkersById.get(lastSelectedStopId);
+        if (previousMarker) {
+            previousMarker.setStyle(
+                getStopMarkerStyle(lastSelectedStopId, false),
+            );
+        }
+    }
+    if (nextId !== null) {
+        const nextMarker = stopMarkersById.get(nextId);
+        if (nextMarker) {
+            nextMarker.setStyle(getStopMarkerStyle(nextId, true));
+        }
+    }
+    lastSelectedStopId = nextId;
+};
+
+const updateStopStyles = () => {
+    if (!map || stopMarkersById.size === 0) return;
+    const selectedStopId = selectedStop.value?.stop_id ?? null;
+    stopMarkersById.forEach((marker, stopId) => {
+        marker.setStyle(
+            getStopMarkerStyle(stopId, selectedStopId === stopId),
+        );
     });
 };
 
@@ -518,18 +665,21 @@ const openRouteFromFavorite = (routeId: number) => {
 const applyAllFavorites = () => {
     const favorites = new Set(favoriteRouteIds.value);
     if (favorites.size === 0) return;
-    const allFavoritesActive =
-        showAllRoutes.value ||
-        favoriteRouteIds.value.every((routeId) =>
-            selectedRoutesSet.value.has(routeId),
-        );
+    if (showAllRoutes.value) {
+        showAllRoutes.value = false;
+        showAllVehicles.value = false;
+        selectedRouteIds.value = Array.from(favorites);
+        return;
+    }
+    const allFavoritesActive = favoriteRouteIds.value.every((routeId) =>
+        selectedRoutesSet.value.has(routeId),
+    );
     showAllRoutes.value = false;
     showAllVehicles.value = false;
     if (allFavoritesActive) {
-        const next = routes.value
-            .map((route) => route.route_id)
-            .filter((routeId) => !favorites.has(routeId));
-        selectedRouteIds.value = next;
+        showAllRoutes.value = true;
+        showAllVehicles.value = true;
+        selectedRouteIds.value = [];
         return;
     }
     const selected = new Set(selectedRouteIds.value);
@@ -636,11 +786,51 @@ const updateMarkers = (vehicles: Vehicle[]) => {
         seen.add(vehicle.id);
         vehiclesById.set(vehicle.id, vehicle);
 
+        const routeBearing = getVehicleRouteBearing(vehicle);
+        const previous = lastPositionsById.get(vehicle.id);
+        let bearing: number | null = null;
+        if (
+            previous &&
+            (previous.lat !== vehicle.latitude ||
+                previous.lon !== vehicle.longitude)
+        ) {
+            bearing = computeBearing(
+                previous.lat,
+                previous.lon,
+                vehicle.latitude,
+                vehicle.longitude,
+            );
+            lastBearingsById.set(vehicle.id, bearing);
+        } else if (previous) {
+            bearing = lastBearingsById.get(vehicle.id) ?? null;
+        }
+        if (!previous) {
+            lastPositionsById.set(vehicle.id, {
+                lat: vehicle.latitude,
+                lon: vehicle.longitude,
+            });
+        } else if (
+            previous.lat !== vehicle.latitude ||
+            previous.lon !== vehicle.longitude
+        ) {
+            lastPositionsById.set(vehicle.id, {
+                lat: vehicle.latitude,
+                lon: vehicle.longitude,
+            });
+        }
+
         let marker = markersById.get(vehicle.id);
-        const icon = createVehicleIcon(vehicle);
+        const isSelected = selectedVehicle.value?.id === vehicle.id;
+        const icon = createVehicleIcon(
+            vehicle,
+            routeBearing ?? bearing,
+            isSelected,
+        );
         if (!marker) {
-            marker = L.marker([vehicle.latitude, vehicle.longitude], { icon });
-            marker.on("click", () => {
+            const newMarker = L.marker([vehicle.latitude, vehicle.longitude], {
+                icon,
+            });
+            newMarker.on("click", () => {
                 selectedVehicle.value = vehiclesById.get(vehicle.id) ?? null;
                 selectedStop.value = null;
                 if (vehicle.route_id) {
@@ -654,8 +844,8 @@ const updateMarkers = (vehicles: Vehicle[]) => {
                     }
                 }
             });
-            marker.addTo(map);
-            markersById.set(vehicle.id, marker);
+            newMarker.addTo(map);
+            markersById.set(vehicle.id, newMarker);
         } else {
             marker.setLatLng([vehicle.latitude, vehicle.longitude]);
             marker.setIcon(icon);
@@ -667,6 +857,8 @@ const updateMarkers = (vehicles: Vehicle[]) => {
             map?.removeLayer(marker);
             markersById.delete(id);
             vehiclesById.delete(id);
+            lastPositionsById.delete(id);
+            lastBearingsById.delete(id);
         }
     });
 
@@ -912,6 +1104,7 @@ const fetchStopTimes = async () => {
         const data = (await response.json()) as StopTime[];
         buildStopTimesIndex(data);
         stopTimesLoadState.value = "idle";
+        updateStopStyles();
         refreshRouteLayersIfReady();
     } catch (error) {
         stopTimesLoadState.value = "error";
@@ -937,6 +1130,7 @@ const fetchRoutes = async () => {
             }),
         );
         routesLoadState.value = "idle";
+        applyVehicleFilter();
         if (showAllRoutes.value) {
             fetchShapes().then(refreshRouteLayersIfReady);
         }
@@ -952,19 +1146,20 @@ const initMap = async () => {
     await loadLeaflet();
     const L = window.L;
 
-    map = L.map(mapEl.value, {
+    const mapInstance = L.map(mapEl.value, {
         zoomControl: false,
     });
-    map.createPane("routes").style.zIndex = "400";
-    map.createPane("stops").style.zIndex = "650";
+    mapInstance.createPane("routes").style.zIndex = "400";
+    mapInstance.createPane("stops").style.zIndex = "550";
+    map = mapInstance;
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
         attribution: "&copy; OpenStreetMap contributors",
-    }).addTo(map);
+    }).addTo(mapInstance);
 
-    map.setView([47.16, 27.58], 12);
-    L.control.zoom({ position: "bottomright" }).addTo(map);
+    mapInstance.setView([47.16, 27.58], 12);
+    L.control.zoom({ position: "bottomright" }).addTo(mapInstance);
 
     fetchRoutes();
     fetchTrips();
@@ -998,7 +1193,7 @@ watch(
     selectedRouteIds,
     () => {
         applyVehicleFilter();
-        addAllStops();
+        updateStopStyles();
         if (routeIdsToShow.value.length > 0) {
             fetchShapes().then(refreshRouteLayersIfReady);
         } else {
@@ -1021,7 +1216,15 @@ watch(
     { deep: true },
 );
 
+watch(selectedStop, () => {
+    updateSelectedStopHighlight();
+});
+
 watch(showAllVehicles, () => {
+    applyVehicleFilter();
+});
+
+watch(selectedVehicle, () => {
     applyVehicleFilter();
 });
 
@@ -1034,7 +1237,7 @@ watch(showUnknownRoutes, () => {
 });
 
 watch(showAllRoutes, () => {
-    addAllStops();
+    updateStopStyles();
     if (routeIdsToShow.value.length > 0) {
         fetchShapes().then(refreshRouteLayersIfReady);
     } else {
@@ -1329,7 +1532,7 @@ onBeforeUnmount(() => {
                             type="button"
                             class="rounded-full px-2 py-0.5 font-semibold text-slate-700 transition"
                             :class="
-                                showAllRoutes || isRouteSelected(routeId)
+                                isRouteSelected(routeId)
                                     ? 'bg-slate-900 text-white'
                                     : 'hover:bg-slate-100'
                             "
@@ -1565,11 +1768,15 @@ onBeforeUnmount(() => {
                     :get-route-short-name="getRouteShortName"
                     :get-stop-location-type-label="getStopLocationTypeLabel"
                     :on-apply-stop-routes="
-                        () => applyStopRoutes(selectedStop.stop_id)
+                        selectedStopId != null
+                            ? () => applyStopRoutes(selectedStopId!)
+                            : () => {}
                     "
                     :on-toggle-stop-route="
-                        (routeId: number) =>
-                            toggleStopRoute(routeId, selectedStop.stop_id)
+                        selectedStopId != null
+                            ? (routeId: number) =>
+                                  toggleStopRoute(routeId, selectedStopId!)
+                            : () => {}
                     "
                     :analytics="getStopAnalytics(selectedStop.stop_id)"
                     :analytics-state="stopAnalyticsState"
@@ -1588,14 +1795,59 @@ onBeforeUnmount(() => {
 :global(.vehicle-icon) {
     background: transparent;
     border: none;
+    overflow: visible;
+}
+
+:global(.vehicle-marker) {
+    position: relative;
+    display: block;
+    width: 16px;
+    height: 16px;
+    transform: rotate(var(--vehicle-rotation));
+    transform-origin: 50% 50%;
+}
+
+:global(.vehicle-marker.is-unknown) {
+    transform: none;
+}
+
+:global(.vehicle-marker.is-selected .vehicle-dot) {
+    box-shadow: 0 6px 12px rgba(15, 23, 42, 0.35),
+        0 0 0 3px rgba(253, 230, 138, 0.9);
+}
+
+:global(.vehicle-marker.is-selected .vehicle-arrow) {
+    filter: drop-shadow(0 3px 6px rgba(15, 23, 42, 0.35));
+}
+
+:global(.vehicle-arrow) {
+    position: absolute;
+    left: 50%;
+    top: -8px;
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 10px solid var(--vehicle-color);
+    transform: translateX(-50%);
+    filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.25));
+}
+
+:global(.vehicle-marker.is-unknown .vehicle-arrow) {
+    opacity: 0;
 }
 
 :global(.vehicle-dot) {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
     display: block;
     width: 14px;
     height: 14px;
     border-radius: 999px;
     border: 2px solid white;
+    background: var(--vehicle-color);
     box-shadow: 0 4px 8px rgba(15, 23, 42, 0.3);
 }
 </style>
