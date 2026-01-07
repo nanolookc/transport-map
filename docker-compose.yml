@@ -7,13 +7,15 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
+    networks:
+      - localbus
 
   backend:
-    image: oven/bun:1.1.38
+    image: oven/bun:1.3.5
     working_dir: /app
     volumes:
       - ./:/app
-    command: ["bun", "backend/server.ts"]
+    command: ["bun", "./backend/server.ts"]
     environment:
       - BACKEND_PORT=3000
       - DATABASE_URL=postgres://localbus:localbus@db:5432/localbus
@@ -23,7 +25,10 @@ services:
     ports:
       - "${BACKEND_PORT}:3000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    networks:
+      - localbus
 
   db:
     image: postgres:16
@@ -35,4 +40,18 @@ services:
     ports:
       - "5439:5432"
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - localbus-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U localbus -d localbus -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - localbus
+
+networks:
+  localbus:
+    driver: bridge
+
+volumes:
+  localbus-db:
