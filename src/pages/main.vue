@@ -157,6 +157,12 @@ const stopAnalyticsCache = ref<Map<number, StopAnalytics>>(new Map());
 const stopAnalyticsState = ref<"idle" | "loading" | "error">("idle");
 const stopAnalyticsError = ref<string | null>(null);
 const selectedStopId = computed(() => selectedStop.value?.stop_id);
+const savedRouteView = ref<{
+    showAllRoutes: boolean;
+    showAllVehicles: boolean;
+    showUnknownRoutes: boolean;
+    selectedRouteIds: number[];
+} | null>(null);
 
 let map: LeafletMap | null = null;
 let refreshTimer: number | null = null;
@@ -769,6 +775,31 @@ const getRouteColor = (routeId: number) => {
     return route?.route_color || "#0f172a";
 };
 
+const rememberRouteView = () => {
+    if (savedRouteView.value) return;
+    savedRouteView.value = {
+        showAllRoutes: showAllRoutes.value,
+        showAllVehicles: showAllVehicles.value,
+        showUnknownRoutes: showUnknownRoutes.value,
+        selectedRouteIds: [...selectedRouteIds.value],
+    };
+};
+
+const restoreRouteView = () => {
+    if (!savedRouteView.value) return;
+    showAllRoutes.value = savedRouteView.value.showAllRoutes;
+    showAllVehicles.value = savedRouteView.value.showAllVehicles;
+    showUnknownRoutes.value = savedRouteView.value.showUnknownRoutes;
+    selectedRouteIds.value = [...savedRouteView.value.selectedRouteIds];
+    savedRouteView.value = null;
+};
+
+const clearSelection = () => {
+    selectedVehicle.value = null;
+    selectedStop.value = null;
+    restoreRouteView();
+};
+
 const updateMarkers = (vehicles: Vehicle[]) => {
     if (!map) return;
     const L = window.L;
@@ -832,11 +863,10 @@ const updateMarkers = (vehicles: Vehicle[]) => {
                 selectedVehicle.value = vehiclesById.get(vehicle.id) ?? null;
                 selectedStop.value = null;
                 if (vehicle.route_id) {
+                    rememberRouteView();
                     showAllVehicles.value = false;
                     showAllRoutes.value = false;
-                    const selected = new Set(selectedRouteIds.value);
-                    selected.add(vehicle.route_id);
-                    selectedRouteIds.value = Array.from(selected);
+                    selectedRouteIds.value = [vehicle.route_id];
                     if (isUnknownRouteId(vehicle.route_id)) {
                         showUnknownRoutes.value = true;
                     }
@@ -1232,6 +1262,12 @@ watch(showStaleVehicles, () => {
 
 watch(showUnknownRoutes, () => {
     applyVehicleFilter();
+});
+
+watch([selectedVehicle, selectedStop], ([vehicle, stop]) => {
+    if (!vehicle && !stop) {
+        savedRouteView.value = null;
+    }
 });
 
 watch(showAllRoutes, () => {
@@ -1681,9 +1717,18 @@ onBeforeUnmount(() => {
                         <h2 class="text-base font-semibold text-slate-900">
                             Vehicle {{ selectedVehicle.label }}
                         </h2>
-                        <span class="text-xs text-slate-500">
-                            ID {{ selectedVehicle.id }}
-                        </span>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs text-slate-500">
+                                ID {{ selectedVehicle.id }}
+                            </span>
+                            <button
+                                type="button"
+                                class="rounded-full border border-slate-200 bg-white/90 px-2 py-1 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:bg-white"
+                                @click="clearSelection"
+                            >
+                                Close
+                            </button>
+                        </div>
                     </div>
                     <div
                         class="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-600"
@@ -1752,34 +1797,55 @@ onBeforeUnmount(() => {
                         </div>
                     </div>
                 </div>
-                <StopPanel
-                    v-else-if="selectedStop"
-                    :stop="selectedStop"
-                    :stop-route-labels="
-                        getStopRouteLabels(selectedStop.stop_id)
-                    "
-                    :stop-route-ids="getStopRouteIds(selectedStop.stop_id)"
-                    :trip-count="getStopTripCount(selectedStop.stop_id)"
-                    :is-stop-all-active="isStopAllActive(selectedStop.stop_id)"
-                    :show-all-routes="showAllRoutes"
-                    :is-route-selected="isRouteSelected"
-                    :get-route-short-name="getRouteShortName"
-                    :get-stop-location-type-label="getStopLocationTypeLabel"
-                    :on-apply-stop-routes="
-                        selectedStopId != null
-                            ? () => applyStopRoutes(selectedStopId!)
-                            : () => {}
-                    "
-                    :on-toggle-stop-route="
-                        selectedStopId != null
-                            ? (routeId: number) =>
-                                  toggleStopRoute(routeId, selectedStopId!)
-                            : () => {}
-                    "
-                    :analytics="getStopAnalytics(selectedStop.stop_id)"
-                    :analytics-state="stopAnalyticsState"
-                    :analytics-error="stopAnalyticsError"
-                />
+                <div v-else-if="selectedStop">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-slate-500">
+                            Stop details
+                        </span>
+                        <button
+                            type="button"
+                            class="rounded-full border border-slate-200 bg-white/90 px-2 py-1 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:bg-white"
+                            @click="clearSelection"
+                        >
+                            Close
+                        </button>
+                    </div>
+                    <StopPanel
+                        class="mt-2"
+                        :stop="selectedStop"
+                        :stop-route-labels="
+                            getStopRouteLabels(selectedStop.stop_id)
+                        "
+                        :stop-route-ids="getStopRouteIds(selectedStop.stop_id)"
+                        :trip-count="getStopTripCount(selectedStop.stop_id)"
+                        :is-stop-all-active="
+                            isStopAllActive(selectedStop.stop_id)
+                        "
+                        :show-all-routes="showAllRoutes"
+                        :is-route-selected="isRouteSelected"
+                        :get-route-short-name="getRouteShortName"
+                        :get-stop-location-type-label="
+                            getStopLocationTypeLabel
+                        "
+                        :on-apply-stop-routes="
+                            selectedStopId != null
+                                ? () => applyStopRoutes(selectedStopId!)
+                                : () => {}
+                        "
+                        :on-toggle-stop-route="
+                            selectedStopId != null
+                                ? (routeId: number) =>
+                                      toggleStopRoute(
+                                          routeId,
+                                          selectedStopId!,
+                                      )
+                                : () => {}
+                        "
+                        :analytics="getStopAnalytics(selectedStop.stop_id)"
+                        :analytics-state="stopAnalyticsState"
+                        :analytics-error="stopAnalyticsError"
+                    />
+                </div>
             </div>
         </div>
     </section>
