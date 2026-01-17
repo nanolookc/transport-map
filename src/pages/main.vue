@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Bug, Star, X, Layers } from "lucide-vue-next";
 import { Input } from "@/components/ui/input";
 import {
@@ -22,6 +20,8 @@ import {
     DrawerTrigger,
 } from "@/components/ui/drawer";
 import StopPanel from "@/components/stop.vue";
+import RouteList from "@/components/RouteList.vue";
+import DirectionFilter from "@/components/DirectionFilter.vue";
 
 declare global {
     interface Window {
@@ -1371,160 +1371,18 @@ onBeforeUnmount(() => {
                     class="h-8 text-xs"
                 />
             </div>
-            <div
-                class="mt-2 flex-1 overflow-y-auto pr-1 text-xs gap-0.5 flex flex-col border rounded-md"
-            >
-                <div
-                    v-if="routes.length === 0"
-                    class="px-2 py-2 text-[11px] text-slate-500"
-                >
-                    No routes loaded yet.
-                </div>
-                <div
-                    v-else-if="filteredRoutes.length === 0"
-                    class="px-2 py-2 text-[11px] text-slate-500"
-                >
-                    No matching routes.
-                </div>
-                <div
-                    v-for="route in filteredRoutes"
-                    :key="route.route_id"
-                    class="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-slate-100"
-                    :class="
-                        isRouteFavorite(route.route_id) ? 'bg-amber-100/75' : ''
-                    "
-                >
-                    <Checkbox
-                        :id="`route-${route.route_id}`"
-                        :model-value="isRouteSelected(route.route_id)"
-                        @update:model-value="
-                            (checked) =>
-                                toggleRouteSelection(route.route_id, checked)
-                        "
+            <div class="mt-2 flex-1 overflow-y-auto pr-1">
+                <RouteList
+                    :routes="routes"
+                    :filtered-routes="filteredRoutes"
+                    :unknown-route-ids="unknownRouteIds"
+                    :is-route-selected="isRouteSelected"
+                    :is-route-favorite="isRouteFavorite"
+                    :toggle-route-selection="toggleRouteSelection"
+                    :toggle-favorite-route="toggleFavoriteRoute"
+                    :should-show-unknown-routes="shouldShowUnknownRoutes"
                     />
-                    <Label
-                        :for="`route-${route.route_id}`"
-                        class="flex flex-1 cursor-pointer items-center gap-2"
-                    >
-                        <!-- <span
-                            class="h-2 w-2 rounded-full shrink-0"
-                            :style="{ backgroundColor: route.route_color }"
-                        ></span> -->
-                        <div
-                            class="flex w-full flex-row items-center gap-2 justify-between"
-                        >
-                            <div class="text-slate-500">
-                                {{ route.route_long_name }}
-                            </div>
-                            <div class="flex gap-2">
-                                <button
-                                    type="button"
-                                    class="text-slate-400 opacity-0 transition group-hover:opacity-100"
-                                    :class="
-                                        isRouteFavorite(route.route_id)
-                                            ? 'opacity-100  '
-                                            : ''
-                                    "
-                                    @click.stop="
-                                        toggleFavoriteRoute(route.route_id)
-                                    "
-                                    :aria-label="`Toggle favorite for ${route.route_short_name}`"
-                                    :title="
-                                        isRouteFavorite(route.route_id)
-                                            ? 'Remove favorite'
-                                            : 'Add favorite'
-                                    "
-                                >
-                                    <Star
-                                        class="h-4 w-4 text-amber-500"
-                                        :class="
-                                            isRouteFavorite(route.route_id)
-                                                ? '  fill-amber-500'
-                                                : ''
-                                        "
-                                    />
-                                </button>
-                                <Badge
-                                    class="font-semibold px-1.5"
-                                    :style="{
-                                        backgroundColor: route.route_color,
-                                    }"
-                                >
-                                    {{ route.route_short_name }}
-                                </Badge>
-                            </div>
-                        </div>
-                    </Label>
-                </div>
-                <div
-                    v-if="shouldShowUnknownRoutes && unknownRouteIds.length > 0"
-                    class="my-2 border-t border-slate-200"
-                ></div>
-                <div
-                    v-if="shouldShowUnknownRoutes && unknownRouteIds.length > 0"
-                    class="px-2 pb-1 pt-2 text-[11px] font-semibold text-slate-500"
-                >
-                    Unknown routes
-                </div>
-                <template v-if="shouldShowUnknownRoutes">
-                    <div
-                        v-for="routeId in unknownRouteIds"
-                        :key="`unknown-${routeId}`"
-                        class="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-100"
-                    >
-                        <Checkbox
-                            :id="`route-unknown-${routeId}`"
-                            :model-value="isRouteSelected(routeId)"
-                            @update:model-value="
-                                (checked) =>
-                                    toggleRouteSelection(routeId, checked)
-                            "
-                        />
-                        <Label
-                            :for="`route-unknown-${routeId}`"
-                            class="flex flex-1 cursor-pointer items-center gap-2"
-                        >
-                            <span class="text-slate-500">Unknown route</span>
-                            <Badge class="font-semibold px-1.5">
-                                {{ routeId }}
-                            </Badge>
-                        </Label>
-                    </div>
-                </template>
-            </div>
-            <div class="mt-4">
-                <div class="text-xs font-semibold text-slate-700">
-                    Direction
-                </div>
-                <div class="mt-2 grid grid-cols-3 gap-2 text-xs">
-                    <Button
-                        size="sm"
-                        :variant="
-                            directionFilter === 'all' ? 'default' : 'outline'
-                        "
-                        @click="directionFilter = 'all'"
-                    >
-                        Both
-                    </Button>
-                    <Button
-                        size="sm"
-                        :variant="
-                            directionFilter === '0' ? 'default' : 'outline'
-                        "
-                        @click="directionFilter = '0'"
-                    >
-                        Way
-                    </Button>
-                    <Button
-                        size="sm"
-                        :variant="
-                            directionFilter === '1' ? 'default' : 'outline'
-                        "
-                        @click="directionFilter = '1'"
-                    >
-                        Roundway
-                    </Button>
-                </div>
+                <DirectionFilter :direction-filter="directionFilter" @change="directionFilter = $event" />
             </div>
             <div
                 v-if="routesLoadState === 'loading'"
@@ -1580,7 +1438,9 @@ onBeforeUnmount(() => {
         </aside>
 
         <div class="relative flex-1">
-            <div class="absolute top-4 left-4 right-4 z-1000 flex items-center gap-3 max-w-full overflow-x-auto scrollbar-hide flex-nowrap">
+            <div
+                class="absolute top-0 left-0 right-0 pt-4 px-4 z-1000 flex items-center gap-3 max-w-full overflow-x-auto scrollbar-hide flex-nowrap"
+            >
                 <Drawer v-model:open="mobileRoutesOpen">
                     <DrawerTrigger as-child>
                         <button
@@ -1597,7 +1457,11 @@ onBeforeUnmount(() => {
                             <div class="flex items-center justify-between">
                                 <DrawerTitle>Routes</DrawerTitle>
                                 <DrawerClose as-child>
-                                    <Button variant="ghost" size="icon" class="h-8 w-8">
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        class="h-8 w-8"
+                                    >
                                         <X class="h-4 w-4" />
                                     </Button>
                                 </DrawerClose>
@@ -1611,157 +1475,18 @@ onBeforeUnmount(() => {
                                     class="h-8 text-xs"
                                 />
                             </div>
-                            <div
-                                class="mt-2 text-xs gap-0.5 flex flex-col border rounded-md"
-                            >
-                                <div
-                                    v-if="routes.length === 0"
-                                    class="px-2 py-2 text-[11px] text-slate-500"
-                                >
-                                    No routes loaded yet.
-                                </div>
-                                <div
-                                    v-else-if="filteredRoutes.length === 0"
-                                    class="px-2 py-2 text-[11px] text-slate-500"
-                                >
-                                    No matching routes.
-                                </div>
-                                <div
-                                    v-for="route in filteredRoutes"
-                                    :key="route.route_id"
-                                    class="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-slate-100"
-                                    :class="
-                                        isRouteFavorite(route.route_id) ? 'bg-amber-100/75' : ''
-                                    "
-                                >
-                                    <Checkbox
-                                        :id="`route-mobile-${route.route_id}`"
-                                        :model-value="isRouteSelected(route.route_id)"
-                                        @update:model-value="
-                                            (checked) =>
-                                                toggleRouteSelection(route.route_id, checked)
-                                        "
-                                    />
-                                    <Label
-                                        :for="`route-mobile-${route.route_id}`"
-                                        class="flex flex-1 cursor-pointer items-center gap-2"
-                                    >
-                                        <div
-                                            class="flex w-full flex-row items-center gap-2 justify-between"
-                                        >
-                                            <div class="text-slate-500">
-                                                {{ route.route_long_name }}
-                                            </div>
-                                            <div class="flex gap-2">
-                                                <button
-                                                    type="button"
-                                                    class="text-slate-400 opacity-0 transition group-hover:opacity-100"
-                                                    :class="
-                                                        isRouteFavorite(route.route_id)
-                                                            ? 'opacity-100  '
-                                                            : ''
-                                                    "
-                                                    @click.stop="
-                                                        toggleFavoriteRoute(route.route_id)
-                                                    "
-                                                    :aria-label="`Toggle favorite for ${route.route_short_name}`"
-                                                    :title="
-                                                        isRouteFavorite(route.route_id)
-                                                            ? 'Remove favorite'
-                                                            : 'Add favorite'
-                                                    "
-                                                >
-                                                    <Star
-                                                        class="h-4 w-4 text-amber-500"
-                                                        :class="
-                                                            isRouteFavorite(route.route_id)
-                                                                ? '  fill-amber-500'
-                                                                : ''
-                                                        "
-                                                    />
-                                                </button>
-                                                <Badge
-                                                    class="font-semibold px-1.5"
-                                                    :style="{
-                                                        backgroundColor: route.route_color,
-                                                    }"
-                                                >
-                                                    {{ route.route_short_name }}
-                                                </Badge>
-                                            </div>
-                                        </div>
-                                    </Label>
-                                </div>
-                                <div
-                                    v-if="shouldShowUnknownRoutes && unknownRouteIds.length > 0"
-                                    class="my-2 border-t border-slate-200"
-                                ></div>
-                                <div
-                                    v-if="shouldShowUnknownRoutes && unknownRouteIds.length > 0"
-                                    class="px-2 pb-1 pt-2 text-[11px] font-semibold text-slate-500"
-                                >
-                                    Unknown routes
-                                </div>
-                                <template v-if="shouldShowUnknownRoutes">
-                                    <div
-                                        v-for="routeId in unknownRouteIds"
-                                        :key="`unknown-mobile-${routeId}`"
-                                        class="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-100"
-                                    >
-                                        <Checkbox
-                                            :id="`route-unknown-mobile-${routeId}`"
-                                            :model-value="isRouteSelected(routeId)"
-                                            @update:model-value="
-                                                (checked) =>
-                                                    toggleRouteSelection(routeId, checked)
-                                            "
-                                        />
-                                        <Label
-                                            :for="`route-unknown-mobile-${routeId}`"
-                                            class="flex flex-1 cursor-pointer items-center gap-2"
-                                        >
-                                            <span class="text-slate-500">Unknown route</span>
-                                            <Badge class="font-semibold px-1.5">
-                                                {{ routeId }}
-                                            </Badge>
-                                        </Label>
-                                    </div>
-                                </template>
-                            </div>
-                            <div class="mt-4">
-                                <div class="text-xs font-semibold text-slate-700">
-                                    Direction
-                                </div>
-                                <div class="mt-2 grid grid-cols-3 gap-2 text-xs">
-                                    <Button
-                                        size="sm"
-                                        :variant="
-                                            directionFilter === 'all' ? 'default' : 'outline'
-                                        "
-                                        @click="directionFilter = 'all'"
-                                    >
-                                        Both
-                                    </Button>
-                                    <Button
-                                        size="sm"
-                                        :variant="
-                                            directionFilter === '0' ? 'default' : 'outline'
-                                        "
-                                        @click="directionFilter = '0'"
-                                    >
-                                        Way
-                                    </Button>
-                                    <Button
-                                        size="sm"
-                                        :variant="
-                                            directionFilter === '1' ? 'default' : 'outline'
-                                        "
-                                        @click="directionFilter = '1'"
-                                    >
-                                        Roundway
-                                    </Button>
-                                </div>
-                            </div>
+                            <RouteList
+                                id-prefix="mobile-"
+                                :routes="routes"
+                                :filtered-routes="filteredRoutes"
+                                :unknown-route-ids="unknownRouteIds"
+                                :is-route-selected="isRouteSelected"
+                                :is-route-favorite="isRouteFavorite"
+                                :toggle-route-selection="toggleRouteSelection"
+                                :toggle-favorite-route="toggleFavoriteRoute"
+                                :should-show-unknown-routes="shouldShowUnknownRoutes"
+                            />
+                            <DirectionFilter :direction-filter="directionFilter" @change="directionFilter = $event" />
                         </div>
                     </DrawerContent>
                 </Drawer>
@@ -2024,7 +1749,11 @@ onBeforeUnmount(() => {
                         <div class="flex items-center justify-between">
                             <DrawerTitle>Stop Details</DrawerTitle>
                             <DrawerClose as-child>
-                                <Button variant="ghost" size="icon" class="h-8 w-8">
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    class="h-8 w-8"
+                                >
                                     <X class="h-4 w-4" />
                                 </Button>
                             </DrawerClose>
@@ -2036,7 +1765,9 @@ onBeforeUnmount(() => {
                             :stop-route-labels="
                                 getStopRouteLabels(selectedStop.stop_id)
                             "
-                            :stop-route-ids="getStopRouteIds(selectedStop.stop_id)"
+                            :stop-route-ids="
+                                getStopRouteIds(selectedStop.stop_id)
+                            "
                             :trip-count="getStopTripCount(selectedStop.stop_id)"
                             :is-stop-all-active="
                                 isStopAllActive(selectedStop.stop_id)
@@ -2098,9 +1829,7 @@ onBeforeUnmount(() => {
                         :show-all-routes="showAllRoutes"
                         :is-route-selected="isRouteSelected"
                         :get-route-short-name="getRouteShortName"
-                        :get-stop-location-type-label="
-                            getStopLocationTypeLabel
-                        "
+                        :get-stop-location-type-label="getStopLocationTypeLabel"
                         :on-apply-stop-routes="
                             selectedStopId != null
                                 ? () => applyStopRoutes(selectedStopId!)
@@ -2109,10 +1838,7 @@ onBeforeUnmount(() => {
                         :on-toggle-stop-route="
                             selectedStopId != null
                                 ? (routeId: number) =>
-                                      toggleStopRoute(
-                                          routeId,
-                                          selectedStopId!,
-                                      )
+                                      toggleStopRoute(routeId, selectedStopId!)
                                 : () => {}
                         "
                         :analytics="getStopAnalytics(selectedStop.stop_id)"
