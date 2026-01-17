@@ -320,7 +320,7 @@ const storeVehicleSnapshots = async (fetchedAt: Date, vehicles: Vehicle[]) => {
       tripId: vehicle.trip_id ?? null,
       latitude: vehicle.latitude,
       longitude: vehicle.longitude,
-      timestamp: vehicle.timestamp ? new Date(vehicle.timestamp) : null,
+      timestamp: parseTimestamp(vehicle.timestamp),
       speed: vehicle.speed ?? null,
       vehicleType: vehicle.vehicle_type ?? null,
       bikeAccessible: vehicle.bike_accessible ?? null,
@@ -358,6 +358,16 @@ const haversineMeters = (
   return R * c;
 };
 
+const parseTimestamp = (ts: string | undefined | null): Date | null => {
+  if (!ts) return null;
+  // If timestamp doesn't end with Z or timezone, assume UTC and add Z
+  const isoTimestamp = /^[0-9TZ.:+-]+$/.test(ts) && (ts.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(ts))
+    ? ts
+    : `${ts}Z`;
+  const date = new Date(isoTimestamp);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
 const recordStopVisits = async (fetchedAt: Date, vehicles: Vehicle[]) => {
   if (stopsCache.length === 0) return;
   const events: Array<{
@@ -391,9 +401,7 @@ const recordStopVisits = async (fetchedAt: Date, vehicles: Vehicle[]) => {
     if (tripInfo.routeId !== vehicle.route_id) {
       return;
     }
-    const observedAt = vehicle.timestamp
-      ? new Date(vehicle.timestamp)
-      : fetchedAt;
+    const observedAt = parseTimestamp(vehicle.timestamp) ?? fetchedAt;
     const lat = vehicle.latitude;
     const lon = vehicle.longitude;
     Array.from(allowedStops).forEach((stopId) => {
@@ -445,7 +453,22 @@ const recordStopVisits = async (fetchedAt: Date, vehicles: Vehicle[]) => {
 const pollVehicles = async () => {
   const fetchedAt = new Date();
   const vehicles = await fetchJson<Vehicle[]>("vehicles");
-  latestVehiclesCache = vehicles;
+  // Normalize timestamps to ensure consistent timezone handling (assume UTC if no timezone info)
+  latestVehiclesCache = vehicles.map((vehicle) => {
+    if (!vehicle.timestamp) {
+      return { ...vehicle, timestamp: '' };
+    }
+    const ts = vehicle.timestamp;
+    // Check if already has timezone (Z or +HH:MM or -HH:MM)
+    const hasTimezone = ts.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(ts);
+    const normalizedTs = hasTimezone ? ts : `${ts}Z`;
+    const date = new Date(normalizedTs);
+    if (Number.isNaN(date.getTime())) {
+      console.error(`Failed to parse timestamp: ${ts}`);
+      return { ...vehicle, timestamp: '' };
+    }
+    return { ...vehicle, timestamp: date.toISOString() };
+  });
   latestVehiclesFetchedAt = fetchedAt;
   await storeVehicleSnapshots(fetchedAt, vehicles);
   await upsertRouteDailyStats(fetchedAt, vehicles);
@@ -583,7 +606,7 @@ const app = new Elysia()
     }
     if (resource === "vehicles" && latestVehiclesCache.length > 0) {
       return Response.json({
-        fetchedAt: latestVehiclesFetchedAt,
+        fetchedAt: latestVehiclesFetchedAt?.toISOString() ?? null,
         vehicles: latestVehiclesCache,
       });
     }
