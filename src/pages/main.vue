@@ -4,7 +4,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Bug, Star } from "lucide-vue-next";
+import { Bug, Star, X, Layers } from "lucide-vue-next";
 import { Input } from "@/components/ui/input";
 import {
     Dialog,
@@ -13,6 +13,14 @@ import {
     DialogTitle,
     DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+    Drawer,
+    DrawerClose,
+    DrawerContent,
+    DrawerHeader,
+    DrawerTitle,
+    DrawerTrigger,
+} from "@/components/ui/drawer";
 import StopPanel from "@/components/stop.vue";
 
 declare global {
@@ -132,6 +140,9 @@ const favoriteRouteIds = ref<number[]>([]);
 const showStaleVehicles = ref(false);
 const debugOpen = ref(false);
 const showUnknownRoutes = ref(false);
+const mobileRoutesOpen = ref(false);
+const mobileStopOpen = ref(false);
+const isMobile = ref(false);
 const nowTick = ref(Date.now());
 const routeSearch = ref("");
 const loadState = ref<"idle" | "loading" | "error">("idle");
@@ -183,6 +194,10 @@ const tripsUrl = "/api/proxy/trips";
 const shapesUrl = "/api/proxy/shapes";
 const stopsUrl = "/api/proxy/stops";
 const stopTimesUrl = "/api/proxy/stop_times";
+
+const checkMobile = () => {
+    isMobile.value = window.innerWidth < 768;
+};
 
 const loadLeaflet = () =>
     new Promise<void>((resolve, reject) => {
@@ -1198,6 +1213,7 @@ const initMap = async () => {
 };
 
 onMounted(() => {
+    checkMobile();
     initMap();
     tickTimer = window.setInterval(() => {
         nowTick.value = Date.now();
@@ -1246,6 +1262,23 @@ watch(
 
 watch(selectedStop, () => {
     updateSelectedStopHighlight();
+    if (selectedStop.value && isMobile.value) {
+        mobileStopOpen.value = true;
+    }
+});
+
+watch(selectedVehicle, () => {
+    applyVehicleFilter();
+    if (selectedVehicle.value && isMobile.value) {
+        selectedStop.value = null;
+        mobileStopOpen.value = false;
+    }
+});
+
+watch(mobileStopOpen, (value) => {
+    if (!value) {
+        selectedStop.value = null;
+    }
 });
 
 watch(showAllVehicles, () => {
@@ -1292,6 +1325,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+    window.removeEventListener("resize", checkMobile);
     if (refreshTimer) {
         window.clearInterval(refreshTimer);
     }
@@ -1305,7 +1339,7 @@ onBeforeUnmount(() => {
 <template>
     <section class="flex min-h-screen w-full">
         <aside
-            class="flex h-screen w-80 xl:w-96 flex-col border-r border-slate-200 bg-white/95 px-4 py-2 backdrop-blur"
+            class="hidden md:flex h-screen w-80 xl:w-96 flex-col border-r border-slate-200 bg-white/95 px-4 py-2 backdrop-blur"
         >
             <div class="mt-2 flex items-center justify-between">
                 <div class="flex items-baseline gap-2">
@@ -1546,25 +1580,210 @@ onBeforeUnmount(() => {
         </aside>
 
         <div class="relative flex-1">
-            <div class="absolute top-4 left-4 z-1000 flex items-center gap-3">
+            <div class="absolute top-4 left-4 right-4 z-1000 flex items-center gap-3 max-w-full overflow-x-auto scrollbar-hide flex-nowrap">
+                <Drawer v-model:open="mobileRoutesOpen">
+                    <DrawerTrigger as-child>
+                        <button
+                            type="button"
+                            class="md:hidden flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-slate-600 shadow-sm transition hover:bg-white flex-shrink-0"
+                            aria-label="Open routes"
+                            title="Routes"
+                        >
+                            <Layers class="h-4 w-4" />
+                        </button>
+                    </DrawerTrigger>
+                    <DrawerContent class="h-[80vh]">
+                        <DrawerHeader class="border-b pb-4">
+                            <div class="flex items-center justify-between">
+                                <DrawerTitle>Routes</DrawerTitle>
+                                <DrawerClose as-child>
+                                    <Button variant="ghost" size="icon" class="h-8 w-8">
+                                        <X class="h-4 w-4" />
+                                    </Button>
+                                </DrawerClose>
+                            </div>
+                        </DrawerHeader>
+                        <div class="flex-1 overflow-y-auto p-4">
+                            <div class="mt-2">
+                                <Input
+                                    v-model="routeSearch"
+                                    placeholder="Search routes"
+                                    class="h-8 text-xs"
+                                />
+                            </div>
+                            <div
+                                class="mt-2 text-xs gap-0.5 flex flex-col border rounded-md"
+                            >
+                                <div
+                                    v-if="routes.length === 0"
+                                    class="px-2 py-2 text-[11px] text-slate-500"
+                                >
+                                    No routes loaded yet.
+                                </div>
+                                <div
+                                    v-else-if="filteredRoutes.length === 0"
+                                    class="px-2 py-2 text-[11px] text-slate-500"
+                                >
+                                    No matching routes.
+                                </div>
+                                <div
+                                    v-for="route in filteredRoutes"
+                                    :key="route.route_id"
+                                    class="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-slate-100"
+                                    :class="
+                                        isRouteFavorite(route.route_id) ? 'bg-amber-100/75' : ''
+                                    "
+                                >
+                                    <Checkbox
+                                        :id="`route-mobile-${route.route_id}`"
+                                        :model-value="isRouteSelected(route.route_id)"
+                                        @update:model-value="
+                                            (checked) =>
+                                                toggleRouteSelection(route.route_id, checked)
+                                        "
+                                    />
+                                    <Label
+                                        :for="`route-mobile-${route.route_id}`"
+                                        class="flex flex-1 cursor-pointer items-center gap-2"
+                                    >
+                                        <div
+                                            class="flex w-full flex-row items-center gap-2 justify-between"
+                                        >
+                                            <div class="text-slate-500">
+                                                {{ route.route_long_name }}
+                                            </div>
+                                            <div class="flex gap-2">
+                                                <button
+                                                    type="button"
+                                                    class="text-slate-400 opacity-0 transition group-hover:opacity-100"
+                                                    :class="
+                                                        isRouteFavorite(route.route_id)
+                                                            ? 'opacity-100  '
+                                                            : ''
+                                                    "
+                                                    @click.stop="
+                                                        toggleFavoriteRoute(route.route_id)
+                                                    "
+                                                    :aria-label="`Toggle favorite for ${route.route_short_name}`"
+                                                    :title="
+                                                        isRouteFavorite(route.route_id)
+                                                            ? 'Remove favorite'
+                                                            : 'Add favorite'
+                                                    "
+                                                >
+                                                    <Star
+                                                        class="h-4 w-4 text-amber-500"
+                                                        :class="
+                                                            isRouteFavorite(route.route_id)
+                                                                ? '  fill-amber-500'
+                                                                : ''
+                                                        "
+                                                    />
+                                                </button>
+                                                <Badge
+                                                    class="font-semibold px-1.5"
+                                                    :style="{
+                                                        backgroundColor: route.route_color,
+                                                    }"
+                                                >
+                                                    {{ route.route_short_name }}
+                                                </Badge>
+                                            </div>
+                                        </div>
+                                    </Label>
+                                </div>
+                                <div
+                                    v-if="shouldShowUnknownRoutes && unknownRouteIds.length > 0"
+                                    class="my-2 border-t border-slate-200"
+                                ></div>
+                                <div
+                                    v-if="shouldShowUnknownRoutes && unknownRouteIds.length > 0"
+                                    class="px-2 pb-1 pt-2 text-[11px] font-semibold text-slate-500"
+                                >
+                                    Unknown routes
+                                </div>
+                                <template v-if="shouldShowUnknownRoutes">
+                                    <div
+                                        v-for="routeId in unknownRouteIds"
+                                        :key="`unknown-mobile-${routeId}`"
+                                        class="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-100"
+                                    >
+                                        <Checkbox
+                                            :id="`route-unknown-mobile-${routeId}`"
+                                            :model-value="isRouteSelected(routeId)"
+                                            @update:model-value="
+                                                (checked) =>
+                                                    toggleRouteSelection(routeId, checked)
+                                            "
+                                        />
+                                        <Label
+                                            :for="`route-unknown-mobile-${routeId}`"
+                                            class="flex flex-1 cursor-pointer items-center gap-2"
+                                        >
+                                            <span class="text-slate-500">Unknown route</span>
+                                            <Badge class="font-semibold px-1.5">
+                                                {{ routeId }}
+                                            </Badge>
+                                        </Label>
+                                    </div>
+                                </template>
+                            </div>
+                            <div class="mt-4">
+                                <div class="text-xs font-semibold text-slate-700">
+                                    Direction
+                                </div>
+                                <div class="mt-2 grid grid-cols-3 gap-2 text-xs">
+                                    <Button
+                                        size="sm"
+                                        :variant="
+                                            directionFilter === 'all' ? 'default' : 'outline'
+                                        "
+                                        @click="directionFilter = 'all'"
+                                    >
+                                        Both
+                                    </Button>
+                                    <Button
+                                        size="sm"
+                                        :variant="
+                                            directionFilter === '0' ? 'default' : 'outline'
+                                        "
+                                        @click="directionFilter = '0'"
+                                    >
+                                        Way
+                                    </Button>
+                                    <Button
+                                        size="sm"
+                                        :variant="
+                                            directionFilter === '1' ? 'default' : 'outline'
+                                        "
+                                        @click="directionFilter = '1'"
+                                    >
+                                        Roundway
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </DrawerContent>
+                </Drawer>
+
                 <div
                     v-if="favoriteRouteIds.length > 0"
-                    class="flex h-9 flex-wrap items-center gap-3 rounded-full bg-white/90 px-2 py-1 text-sm shadow-sm"
+                    class="flex h-9 items-center gap-3 rounded-full bg-white/90 px-2 py-1 text-sm shadow-sm flex-shrink-0"
                 >
                     <button
                         type="button"
-                        class="rounded-full p-1 text-amber-500"
+                        class="rounded-full p-1 text-amber-500 shrink-0"
                         title="Show all favorites"
                         @click="applyAllFavorites"
                     >
                         <Star class="h-4 w-4 fill-amber-500" />
                     </button>
-                    <div class="flex gap-1.5">
+                    <div class="flex gap-1.5 flex-nowrap">
                         <button
                             v-for="routeId in favoriteRouteIds"
                             :key="routeId"
                             type="button"
-                            class="rounded-full px-2 py-0.5 font-semibold text-slate-700 transition"
+                            class="rounded-full px-2 py-0.5 font-semibold text-slate-700 transition shrink-0 whitespace-nowrap"
                             :class="
                                 isRouteSelected(routeId)
                                     ? 'bg-slate-900 text-white'
@@ -1578,7 +1797,7 @@ onBeforeUnmount(() => {
                     </div>
                 </div>
                 <div
-                    class="flex h-9 items-center gap-1.5 rounded-full bg-white/90 px-3 py-1 text-sm font-semibold shadow-sm"
+                    class="flex h-9 items-center gap-1.5 rounded-full bg-white/90 px-3 py-1 text-sm font-semibold shadow-sm flex-shrink-0"
                 >
                     <span class="flex items-center gap-2 text-slate-700">
                         <span
@@ -1595,7 +1814,7 @@ onBeforeUnmount(() => {
                     <DialogTrigger as-child>
                         <button
                             type="button"
-                            class="flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-slate-600 shadow-sm transition hover:bg-white"
+                            class="flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-slate-600 shadow-sm transition hover:bg-white flex-shrink-0"
                             aria-label="Open debug"
                             title="Debug"
                         >
@@ -1709,7 +1928,7 @@ onBeforeUnmount(() => {
             <div ref="mapEl" class="relative z-0 h-screen w-full"></div>
 
             <div
-                v-if="selectedVehicle || selectedStop"
+                v-if="selectedVehicle"
                 class="absolute bottom-4 left-4 right-4 z-1000 md:left-auto md:right-4 md:w-80 xl:w-96 rounded-xl bg-white/95 p-4 shadow-lg backdrop-blur"
             >
                 <div v-if="selectedVehicle">
@@ -1797,19 +2016,74 @@ onBeforeUnmount(() => {
                         </div>
                     </div>
                 </div>
-                <div v-else-if="selectedStop">
-                    <div class="flex items-center justify-between">
-                        <span class="text-xs font-semibold text-slate-500">
-                            Stop details
-                        </span>
+            </div>
+
+            <Drawer v-model:open="mobileStopOpen">
+                <DrawerContent v-if="selectedStop" class="h-[70vh]">
+                    <DrawerHeader class="border-b pb-4">
+                        <div class="flex items-center justify-between">
+                            <DrawerTitle>Stop Details</DrawerTitle>
+                            <DrawerClose as-child>
+                                <Button variant="ghost" size="icon" class="h-8 w-8">
+                                    <X class="h-4 w-4" />
+                                </Button>
+                            </DrawerClose>
+                        </div>
+                    </DrawerHeader>
+                    <div class="flex-1 overflow-y-auto p-4">
+                        <StopPanel
+                            :stop="selectedStop"
+                            :stop-route-labels="
+                                getStopRouteLabels(selectedStop.stop_id)
+                            "
+                            :stop-route-ids="getStopRouteIds(selectedStop.stop_id)"
+                            :trip-count="getStopTripCount(selectedStop.stop_id)"
+                            :is-stop-all-active="
+                                isStopAllActive(selectedStop.stop_id)
+                            "
+                            :show-all-routes="showAllRoutes"
+                            :is-route-selected="isRouteSelected"
+                            :get-route-short-name="getRouteShortName"
+                            :get-stop-location-type-label="
+                                getStopLocationTypeLabel
+                            "
+                            :on-apply-stop-routes="
+                                selectedStopId != null
+                                    ? () => applyStopRoutes(selectedStopId!)
+                                    : () => {}
+                            "
+                            :on-toggle-stop-route="
+                                selectedStopId != null
+                                    ? (routeId: number) =>
+                                          toggleStopRoute(
+                                              routeId,
+                                              selectedStopId!,
+                                          )
+                                    : () => {}
+                            "
+                            :analytics="getStopAnalytics(selectedStop.stop_id)"
+                            :analytics-state="stopAnalyticsState"
+                            :analytics-error="stopAnalyticsError"
+                        />
+                    </div>
+                </DrawerContent>
+            </Drawer>
+
+            <Dialog>
+                <DialogContent
+                    v-if="selectedStop"
+                    class="hidden md:block md:left-auto md:right-4 md:w-80 xl:w-96"
+                >
+                    <DialogHeader>
+                        <DialogTitle>Stop details</DialogTitle>
                         <button
                             type="button"
-                            class="rounded-full border border-slate-200 bg-white/90 px-2 py-1 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:bg-white"
+                            class="absolute right-4 top-4"
                             @click="clearSelection"
                         >
-                            Close
+                            <X class="h-4 w-4" />
                         </button>
-                    </div>
+                    </DialogHeader>
                     <StopPanel
                         class="mt-2"
                         :stop="selectedStop"
@@ -1845,8 +2119,8 @@ onBeforeUnmount(() => {
                         :analytics-state="stopAnalyticsState"
                         :analytics-error="stopAnalyticsError"
                     />
-                </div>
-            </div>
+                </DialogContent>
+            </Dialog>
         </div>
     </section>
 </template>
@@ -1914,5 +2188,13 @@ onBeforeUnmount(() => {
     border: 2px solid white;
     background: var(--vehicle-color);
     box-shadow: 0 4px 8px rgba(15, 23, 42, 0.3);
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+    display: none;
+}
+.scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
 }
 </style>
