@@ -142,6 +142,7 @@ const debugOpen = ref(false);
 const showUnknownRoutes = ref(false);
 const mobileRoutesOpen = ref(false);
 const mobileStopOpen = ref(false);
+const desktopStopOpen = ref(false);
 const isMobile = ref(false);
 const nowTick = ref(Date.now());
 const routeSearch = ref("");
@@ -1214,6 +1215,7 @@ const initMap = async () => {
 
 onMounted(() => {
     checkMobile();
+    window.addEventListener("resize", checkMobile);
     initMap();
     tickTimer = window.setInterval(() => {
         nowTick.value = Date.now();
@@ -1264,6 +1266,8 @@ watch(selectedStop, () => {
     updateSelectedStopHighlight();
     if (selectedStop.value && isMobile.value) {
         mobileStopOpen.value = true;
+    } else if (selectedStop.value && !isMobile.value) {
+        desktopStopOpen.value = true;
     }
 });
 
@@ -1272,12 +1276,33 @@ watch(selectedVehicle, () => {
     if (selectedVehicle.value && isMobile.value) {
         selectedStop.value = null;
         mobileStopOpen.value = false;
+    } else if (selectedVehicle.value && !isMobile.value) {
+        selectedStop.value = null;
+        desktopStopOpen.value = false;
     }
 });
 
 watch(mobileStopOpen, (value) => {
     if (!value) {
         selectedStop.value = null;
+    }
+});
+
+watch(desktopStopOpen, (value) => {
+    if (!value) {
+        selectedStop.value = null;
+    }
+});
+
+watch(isMobile, (value) => {
+    if (selectedStop.value) {
+        if (value) {
+            mobileStopOpen.value = true;
+            desktopStopOpen.value = false;
+        } else {
+            mobileStopOpen.value = false;
+            desktopStopOpen.value = true;
+        }
     }
 });
 
@@ -1800,10 +1825,11 @@ onBeforeUnmount(() => {
                 </DrawerContent>
             </Drawer>
 
-            <Dialog>
+            <Dialog v-model:open="desktopStopOpen">
                 <DialogContent
                     v-if="selectedStop"
-                    class="hidden md:block md:left-auto md:right-4 md:w-80 xl:w-96"
+                    no-overlay
+                    class="hidden md:block left-auto right-4 bottom-4 top-auto w-80 xl:w-96 translate-x-0 translate-y-0"
                 >
                     <DialogHeader>
                         <DialogTitle>Stop details</DialogTitle>
