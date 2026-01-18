@@ -518,6 +518,8 @@ const scheduleStaticRefresh = () => {
 const timeToMinutes = (date: Date) =>
   date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60;
 
+const timeToIso = (date: Date) => date.toISOString();
+
 const minutesToTime = (value: number) => {
   const total = Math.round(value);
   const hours = Math.floor(total / 60);
@@ -543,16 +545,20 @@ const localDateKey = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 
-const buildPredictedTimes = (dayValues: number[][]) => {
+const buildPredictedTimes = (dayValues: string[][]) => {
   if (dayValues.length === 0) return [];
+  // Convert ISO timestamps to minutes for percentile calculation
   const sortedDays = dayValues.map((values) =>
-    values.slice().sort((a, b) => a - b),
+    values
+      .map((ts) => timeToMinutes(new Date(ts)))
+      .filter((v) => !Number.isNaN(v))
+      .sort((a, b) => a - b),
   );
   const maxCount = sortedDays.reduce(
     (acc, values) => Math.max(acc, values.length),
     0,
   );
-  const predicted: number[] = [];
+  const predictedMinutes: number[] = [];
   for (let i = 0; i < maxCount; i += 1) {
     const samples = sortedDays
       .filter((values) => values.length > i)
@@ -560,9 +566,19 @@ const buildPredictedTimes = (dayValues: number[][]) => {
     if (samples.length === 0) continue;
     const p50 = percentile(samples, 0.5);
     if (p50 !== null) {
-      predicted.push(p50);
+      predictedMinutes.push(p50);
     }
   }
+  // Convert back to ISO timestamps (use a reference date for the time)
+  const today = new Date();
+  const predicted: string[] = [];
+  predictedMinutes.forEach((minutes) => {
+    const hours = Math.floor(minutes / 60);
+    const mins = Math.round(minutes % 60);
+    const predictedDate = new Date(today);
+    predictedDate.setHours(hours, mins, 0, 0);
+    predicted.push(predictedDate.toISOString());
+  });
   return predicted;
 };
 const getRouteStartStats = async (routeId: number) => {
@@ -643,7 +659,6 @@ const app = new Elysia()
     }
     const cutoff = new Date(today);
     cutoff.setDate(today.getDate() - 6);
-    const nowMinutes = timeToMinutes(today);
 
     const visits = await db
       .select({
@@ -673,23 +688,23 @@ const app = new Elysia()
     const daySet = new Set(dayKeys.map((day) => day.key));
     const visitsByDay = new Map<
       string,
-      Map<number, { times: number[]; predicted: boolean }>
+      Map<number, { timestamps: string[]; predicted: boolean }>
     >();
-    const historyByRoute = new Map<number, number[][]>();
+    const historyByRoute = new Map<number, string[][]>();
 
     knownVisits.forEach((row) => {
       const dayKey = localDateKey(row.observedAt);
       if (!daySet.has(dayKey)) return;
       const routeId = row.routeId as number;
-      const minutes = timeToMinutes(row.observedAt);
+      const timestamp = timeToIso(row.observedAt);
       if (!visitsByDay.has(dayKey)) {
         visitsByDay.set(dayKey, new Map());
       }
       const dayMap = visitsByDay.get(dayKey);
       if (!dayMap?.has(routeId)) {
-        dayMap?.set(routeId, { times: [], predicted: false });
+        dayMap?.set(routeId, { timestamps: [], predicted: false });
       }
-      dayMap?.get(routeId)?.times.push(minutes);
+      dayMap?.get(routeId)?.timestamps.push(timestamp);
     });
 
     dayKeys.forEach((day) => {
@@ -702,11 +717,13 @@ const app = new Elysia()
         }
         historyByRoute
           .get(routeId)
-          ?.push(value.times.slice().sort((a, b) => a - b));
+          ?.push(value.timestamps.slice().sort((a, b) =>
+            new Date(a).getTime() - new Date(b).getTime()
+          ));
       });
     });
 
-    const predictedByRoute = new Map<number, number[]>();
+    const predictedByRoute = new Map<number, string[]>();
     historyByRoute.forEach((values, routeId) => {
       predictedByRoute.set(routeId, buildPredictedTimes(values));
     });
@@ -714,34 +731,39 @@ const app = new Elysia()
     const days = dayKeys.map((day) => {
       const points: Array<{
         routeId: number;
-        minutes: number[];
+        timestamps: string[];
         predicted: boolean;
       }> = [];
       if (day.isToday) {
         const dayMap = visitsByDay.get(day.key);
         if (dayMap) {
           dayMap.forEach((value, routeId) => {
-            if (value.times.length === 0) return;
+            if (value.timestamps.length === 0) return;
             points.push({
               routeId,
-              minutes: value.times.slice().sort((a, b) => a - b),
+              timestamps: value.timestamps.slice().sort((a, b) =>
+                new Date(a).getTime() - new Date(b).getTime()
+              ),
               predicted: false,
             });
           });
         }
-        predictedByRoute.forEach((minutes, routeId) => {
-          const future = minutes.filter((value) => value > nowMinutes);
+        predictedByRoute.forEach((timestamps, routeId) => {
+          const nowTime = new Date().toISOString();
+          const future = timestamps.filter((ts) => ts > nowTime);
           if (future.length === 0) return;
-          points.push({ routeId, minutes: future, predicted: true });
+          points.push({ routeId, timestamps: future, predicted: true });
         });
       } else {
         const dayMap = visitsByDay.get(day.key);
         if (dayMap) {
           dayMap.forEach((value, routeId) => {
-            if (value.times.length === 0) return;
+            if (value.timestamps.length === 0) return;
             points.push({
               routeId,
-              minutes: value.times.slice().sort((a, b) => a - b),
+              timestamps: value.timestamps.slice().sort((a, b) =>
+                new Date(a).getTime() - new Date(b).getTime()
+              ),
               predicted: false,
             });
           });

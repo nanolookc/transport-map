@@ -97,7 +97,7 @@ type StopAnalytics = {
         isToday: boolean;
         points: Array<{
             routeId: number;
-            minutes: number[];
+            timestamps: string[];
             predicted: boolean;
         }>;
     }>;

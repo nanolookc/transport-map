@@ -30,7 +30,7 @@ type StopAnalytics = {
         isToday: boolean;
         points: Array<{
             routeId: number;
-            minutes: number[];
+            timestamps: string[];
             predicted: boolean;
         }>;
     }>;
@@ -85,19 +85,19 @@ onBeforeUnmount(() => {
 const scrollToNow = () => {
     if (!chartScrollEl.value) return;
     const now = new Date();
-    const minutes = now.getHours() * 60 + now.getMinutes();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
     const range = displayRange.value;
     const view = chartScrollEl.value;
     const maxScroll = view.scrollHeight - view.clientHeight;
-    if (minutes <= range.min) {
+    if (nowMinutes <= range.min) {
         view.scrollTop = 0;
         return;
     }
-    if (minutes >= range.max) {
+    if (nowMinutes >= range.max) {
         view.scrollTop = maxScroll;
         return;
     }
-    const ratio = (minutes - range.min) / range.span;
+    const ratio = (nowMinutes - range.min) / range.span;
     view.scrollTop = Math.max(0, Math.min(maxScroll, maxScroll * ratio - 80));
 };
 
@@ -143,6 +143,7 @@ const graphPoints = computed(() => {
         key: string;
         dayIndex: number;
         minutes: number;
+        timestamp: string;
         routeId: number;
         predicted: boolean;
         color: string;
@@ -151,11 +152,13 @@ const graphPoints = computed(() => {
         day.points.forEach((group) => {
             if (!graphSelectedSet.value.has(group.routeId)) return;
             const color = routeColorMap.value.get(group.routeId) ?? "#0f172a";
-            group.minutes.forEach((minutes, index) => {
+            group.timestamps.forEach((timestamp, index) => {
+                const minutes = timestampToMinutes(timestamp);
                 points.push({
-                    key: `${day.date}-${group.routeId}-${minutes}-${index}`,
+                    key: `${day.date}-${group.routeId}-${timestamp}-${index}`,
                     dayIndex,
                     minutes,
+                    timestamp,
                     routeId: group.routeId,
                     predicted: group.predicted,
                     color,
@@ -175,6 +178,18 @@ const formatMinutes = (value: number) => {
     const hours = Math.floor(value / 60);
     const minutes = Math.round(value % 60);
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+};
+
+const formatTimestamp = (isoString: string) => {
+    const date = new Date(isoString);
+    const hours = date.getHours();
+    const minutes = date.getMinutes();
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+};
+
+const timestampToMinutes = (isoString: string) => {
+    const date = new Date(isoString);
+    return date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60;
 };
 
 const displayRange = computed(() => {
@@ -228,6 +243,7 @@ const quarterTicks = computed(() => {
 const pointStyle = (point: {
     dayIndex: number;
     minutes: number;
+    timestamp: string;
     predicted: boolean;
     color: string;
 }) => {
@@ -244,19 +260,22 @@ const pointStyle = (point: {
 
 const nowLineStyle = computed(() => {
     const now = new Date();
-    const minutes = now.getHours() * 60 + now.getMinutes();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
     const range = displayRange.value;
-    if (minutes < range.min || minutes > range.max) {
+    if (nowMinutes < range.min || nowMinutes > range.max) {
         return null;
     }
-    const y = ((minutes - range.min) / range.span) * 100;
+    const y = ((nowMinutes - range.min) / range.span) * 100;
     return { top: `${y}%` };
 });
 
-const formatPointLabel = (point: { minutes: number; predicted: boolean }) =>
+const formatPointLabel = (point: {
+    timestamp: string;
+    predicted: boolean;
+}) =>
     point.predicted
-        ? `Predicted ${formatMinutes(point.minutes)}`
-        : formatMinutes(point.minutes);
+        ? `Predicted ${formatTimestamp(point.timestamp)}`
+        : formatTimestamp(point.timestamp);
 </script>
 
 <template>
@@ -438,7 +457,7 @@ const formatPointLabel = (point: { minutes: number; predicted: boolean }) =>
                                             side="top"
                                             class="text-[11px]"
                                         >
-                                            {{ formatPointLabel(point) }}
+                                            {{ formatPointLabel({ timestamp: point.timestamp, predicted: point.predicted }) }}
                                         </TooltipContent>
                                     </Tooltip>
                                 </div>
