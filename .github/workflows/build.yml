@@ -27,7 +27,7 @@ jobs:
           context: .
           file: docker/Dockerfile.frontend
           push: true
-          tags: ghcr.io/nanolookc/transit-frontend:sha-${{ github.sha }}
+          tags: ghcr.io/nanolookc/transport-map-frontend:sha-${{ github.sha }}
 
       - name: Build & push backend
         uses: docker/build-push-action@v6
@@ -35,4 +35,4 @@ jobs:
           context: .
           file: docker/Dockerfile.backend
           push: true
-          tags: ghcr.io/nanolookc/transit-backend:sha-${{ github.sha }}
+          tags: ghcr.io/nanolookc/transport-map-backend:sha-${{ github.sha }}
