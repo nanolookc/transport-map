@@ -1,0 +1,16 @@
+domain: transit.lan
+
+frontend:
+  image:
+    repository: ghcr.io/nanolookc/transit-frontend
+    tag: "sha-DEV"
+  replicas: 1
+  port: 3000
+
+backend:
+  image:
+    repository: ghcr.io/nanolookc/transit-backend
+    tag: "sha-DEV"
+  replicas: 2
+  port: 3000
+  envFromSecret: transit-backend-secrets
