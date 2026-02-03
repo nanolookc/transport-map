@@ -36,7 +36,7 @@ spec:
             name: {{ .Values.backend.envFromSecret }}
         readinessProbe:
           httpGet:
-            path: /
+            path: /api/health
             port: {{ .Values.backend.port }}
           initialDelaySeconds: 5
           periodSeconds: 5
