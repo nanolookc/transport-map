@@ -4,6 +4,7 @@ metadata:
   name: transit-frontend
 spec:
   replicas: {{ .Values.frontend.replicas }}
+  revisionHistoryLimit: 2
   selector:
     matchLabels: { app: transit-frontend }
   template:

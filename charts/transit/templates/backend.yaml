@@ -4,6 +4,7 @@ metadata:
   name: transit-backend
 spec:
   replicas: {{ .Values.backend.replicas }}
+  revisionHistoryLimit: 2
   strategy:
     type: RollingUpdate
     rollingUpdate:
