@@ -30,6 +30,8 @@ spec:
         - name: BACKEND_PORT
           value: "{{ .Values.backend.port }}"
         envFrom:
+        - configMapRef:
+            name: {{ .Values.backend.envFromConfigMap }}
         - secretRef:
             name: {{ .Values.backend.envFromSecret }}
         readinessProbe:
