@@ -12,5 +12,6 @@ backend:
     repository: ghcr.io/nanolookc/transport-map-backend
     tag: "sha-DEV"
   replicas: 2
+  workerReplicas: 1
   port: 3000
   envFromSecret: transit-backend-secrets

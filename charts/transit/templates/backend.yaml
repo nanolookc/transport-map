@@ -23,13 +23,67 @@ spec:
         labelSelector:
           matchLabels: { app: transit-backend }
       containers:
-      - name: backend
+      - name: backend-api
         image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
         ports:
         - containerPort: {{ .Values.backend.port }}
         env:
         - name: BACKEND_PORT
           value: "{{ .Values.backend.port }}"
+        - name: INGEST_ENABLED
+          value: "false"
+        envFrom:
+        - configMapRef:
+            name: {{ .Values.backend.envFromConfigMap }}
+        - secretRef:
+            name: {{ .Values.backend.envFromSecret }}
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: {{ .Values.backend.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /
+            port: {{ .Values.backend.port }}
+          initialDelaySeconds: 15
+          periodSeconds: 10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transit-backend-worker
+spec:
+  replicas: {{ .Values.backend.workerReplicas }}
+  revisionHistoryLimit: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels: { app: transit-backend-worker }
+  template:
+    metadata:
+      labels: { app: transit-backend-worker }
+    spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels: { app: transit-backend-worker }
+      containers:
+      - name: backend-worker
+        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+        ports:
+        - containerPort: {{ .Values.backend.port }}
+        env:
+        - name: BACKEND_PORT
+          value: "{{ .Values.backend.port }}"
+        - name: INGEST_ENABLED
+          value: "true"
         envFrom:
         - configMapRef:
             name: {{ .Values.backend.envFromConfigMap }}

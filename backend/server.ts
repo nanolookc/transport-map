@@ -1,5 +1,5 @@
 import { Elysia } from "elysia";
-import { sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import type { AnyPgTable } from "drizzle-orm/pg-core";
 import {
   routeDailyStats,
@@ -79,6 +79,8 @@ type ShapePoint = {
 const TRANSIT_API_KEY = process.env.TRANSIT_API_KEY;
 const TRANSIT_AGENCY_ID = process.env.TRANSIT_AGENCY_ID || "1";
 const TRANSIT_BASE_URL = process.env.TRANSIT_API_BASE_URL;
+const INGEST_ENABLED =
+  (process.env.INGEST_ENABLED ?? "true").toLowerCase() === "true";
 
 if (!TRANSIT_API_KEY) {
   throw new Error("TRANSIT_API_KEY is not set");
@@ -368,6 +370,46 @@ const parseTimestamp = (ts: string | undefined | null): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+const loadLatestVehiclesSnapshotCache = async () => {
+  const latest = await db
+    .select({ fetchedAt: vehicleSnapshots.fetchedAt })
+    .from(vehicleSnapshots)
+    .orderBy(desc(vehicleSnapshots.fetchedAt))
+    .limit(1);
+  const fetchedAt = latest[0]?.fetchedAt ?? null;
+  if (!fetchedAt) return false;
+  const rows = await db
+    .select({
+      vehicleId: vehicleSnapshots.vehicleId,
+      routeId: vehicleSnapshots.routeId,
+      tripId: vehicleSnapshots.tripId,
+      latitude: vehicleSnapshots.latitude,
+      longitude: vehicleSnapshots.longitude,
+      timestamp: vehicleSnapshots.timestamp,
+      speed: vehicleSnapshots.speed,
+      vehicleType: vehicleSnapshots.vehicleType,
+      bikeAccessible: vehicleSnapshots.bikeAccessible,
+      wheelchairAccessible: vehicleSnapshots.wheelchairAccessible,
+    })
+    .from(vehicleSnapshots)
+    .where(sql`${vehicleSnapshots.fetchedAt} = ${fetchedAt}`);
+  latestVehiclesFetchedAt = fetchedAt;
+  latestVehiclesCache = rows.map((row) => ({
+    id: row.vehicleId,
+    label: String(row.vehicleId),
+    latitude: row.latitude ?? 0,
+    longitude: row.longitude ?? 0,
+    timestamp: (row.timestamp ?? fetchedAt).toISOString(),
+    speed: row.speed ?? 0,
+    route_id: row.routeId ?? -1,
+    trip_id: row.tripId,
+    vehicle_type: row.vehicleType ?? 0,
+    bike_accessible: row.bikeAccessible ?? "",
+    wheelchair_accessible: row.wheelchairAccessible ?? "",
+  }));
+  return latestVehiclesCache.length > 0;
+};
+
 const recordStopVisits = async (fetchedAt: Date, vehicles: Vehicle[]) => {
   if (stopsCache.length === 0) return;
   const events: Array<{
@@ -620,11 +662,16 @@ const app = new Elysia()
     if (!allowed.has(resource)) {
       return new Response("Not found", { status: 404 });
     }
-    if (resource === "vehicles" && latestVehiclesCache.length > 0) {
-      return Response.json({
-        fetchedAt: latestVehiclesFetchedAt?.toISOString() ?? null,
-        vehicles: latestVehiclesCache,
-      });
+    if (resource === "vehicles") {
+      if (latestVehiclesCache.length === 0) {
+        await loadLatestVehiclesSnapshotCache();
+      }
+      if (latestVehiclesCache.length > 0) {
+        return Response.json({
+          fetchedAt: latestVehiclesFetchedAt?.toISOString() ?? null,
+          vehicles: latestVehiclesCache,
+        });
+      }
     }
     const data = await fetchJson(resource);
     return Response.json(data);
@@ -803,15 +850,20 @@ const port = Number(process.env.BACKEND_PORT || 3000);
 app.listen(port);
 console.log(`Backend listening on http://localhost:${port}`);
 
-await refreshStaticData().catch((error) =>
-  console.error("Initial static refresh failed", error),
-);
-await loadStopsCache().catch((error) =>
-  console.error("Stops cache load failed", error),
-);
-scheduleLoop();
-scheduleStaticRefresh();
-scheduleDailyCleanup();
+if (INGEST_ENABLED) {
+  await refreshStaticData().catch((error) =>
+    console.error("Initial static refresh failed", error),
+  );
+  await loadStopsCache().catch((error) =>
+    console.error("Stops cache load failed", error),
+  );
+  scheduleLoop();
+  scheduleStaticRefresh();
+  scheduleDailyCleanup();
+  console.log("Ingest mode enabled");
+} else {
+  console.log("Ingest mode disabled");
+}
 
 process.on("SIGINT", async () => {
   await sqlClient.close();
