@@ -114,6 +114,44 @@ const tripByIdCache = new Map<
 const stopIdsByTripId = new Map<string, Set<number>>();
 let latestVehiclesCache: Vehicle[] = [];
 let latestVehiclesFetchedAt: Date | null = null;
+let lastDbErrorAt: Date | null = null;
+let lastDbErrorMessage: string | null = null;
+let lastDbSuccessAt: Date | null = null;
+
+const toErrorMessage = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  return String(error);
+};
+
+const isLikelyDbError = (error: unknown) => {
+  const message = toErrorMessage(error);
+  return (
+    message.includes("ERR_POSTGRES") ||
+    message.includes("PostgresError") ||
+    message.includes("Failed query")
+  );
+};
+
+const markDbError = (error: unknown) => {
+  if (!isLikelyDbError(error)) return;
+  lastDbErrorAt = new Date();
+  lastDbErrorMessage = toErrorMessage(error);
+};
+
+const markDbSuccess = () => {
+  lastDbSuccessAt = new Date();
+};
+
+const checkDbHealth = async () => {
+  try {
+    await db.execute(sql`select 1`);
+    markDbSuccess();
+    return true;
+  } catch (error) {
+    markDbError(error);
+    return false;
+  }
+};
 
 const getPollIntervalMs = (now = new Date()) => {
   const hour = now.getHours();
@@ -522,6 +560,7 @@ const scheduleLoop = () => {
     try {
       await pollVehicles();
     } catch (error) {
+      markDbError(error);
       console.error("Vehicle poll failed", error);
     } finally {
       const interval = getPollIntervalMs();
@@ -535,7 +574,9 @@ const scheduleDailyCleanup = () => {
   const run = async () => {
     try {
       await cleanupOldSnapshots();
+      markDbSuccess();
     } catch (error) {
+      markDbError(error);
       console.error("Cleanup failed", error);
     } finally {
       setTimeout(run, 24 * 60 * 60 * 1000);
@@ -548,7 +589,9 @@ const scheduleStaticRefresh = () => {
   const run = async () => {
     try {
       await refreshStaticData();
+      markDbSuccess();
     } catch (error) {
+      markDbError(error);
       console.error("Static refresh failed", error);
     } finally {
       setTimeout(run, 6 * 60 * 60 * 1000);
@@ -648,7 +691,28 @@ const getRouteStartStats = async (routeId: number) => {
 };
 
 const app = new Elysia()
-  .get("/api/health", () => ({ ok: true }))
+  .get("/api/live", () => ({ ok: true }))
+  .get("/api/health", async () => {
+    const dbOk = await checkDbHealth();
+    if (!dbOk) {
+      return Response.json(
+        {
+          ok: false,
+          dbOk: false,
+          lastDbErrorAt: lastDbErrorAt?.toISOString() ?? null,
+          lastDbErrorMessage,
+        },
+        { status: 503 },
+      );
+    }
+    return {
+      ok: true,
+      dbOk: true,
+      lastDbErrorAt: lastDbErrorAt?.toISOString() ?? null,
+      lastDbErrorMessage,
+      lastDbSuccessAt: lastDbSuccessAt?.toISOString() ?? null,
+    };
+  })
   .get("/api/proxy/:resource", async ({ params }) => {
     const resource = params.resource;
     const allowed = new Set([
@@ -851,12 +915,14 @@ app.listen(port);
 console.log(`Backend listening on http://localhost:${port}`);
 
 if (INGEST_ENABLED) {
-  await refreshStaticData().catch((error) =>
-    console.error("Initial static refresh failed", error),
-  );
-  await loadStopsCache().catch((error) =>
-    console.error("Stops cache load failed", error),
-  );
+  await refreshStaticData().catch((error) => {
+    markDbError(error);
+    console.error("Initial static refresh failed", error);
+  });
+  await loadStopsCache().catch((error) => {
+    markDbError(error);
+    console.error("Stops cache load failed", error);
+  });
   scheduleLoop();
   scheduleStaticRefresh();
   scheduleDailyCleanup();
