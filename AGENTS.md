@@ -53,5 +53,7 @@
 - Nginx proxies `/api/*` to backend (`docker/nginx.conf`).
 
 ## Scripts
-- `npm run server` runs backend
-- `npm run db:generate`, `npm run db:push` for migrations
+- Use `bun` as the default package manager and script runner in this repo.
+- `bun run server` runs backend
+- `bun run build` builds frontend
+- `bun run db:generate`, `bun run db:push` for migrations

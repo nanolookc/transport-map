@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import { Bug, Star, X, Layers } from "lucide-vue-next";
+import { Bug, Star, X, Layers, Sun, Moon, Search, RotateCcw } from "lucide-vue-next";
 import { Input } from "@/components/ui/input";
 import {
     Dialog,
@@ -146,6 +146,10 @@ const desktopStopOpen = ref(false);
 const isMobile = ref(false);
 const nowTick = ref(Date.now());
 const routeSearch = ref("");
+const isDark = ref(false);
+const isTouchUi = ref(false);
+const statsInfoOpen = ref(false);
+const statsInfoRef = ref<HTMLElement | null>(null);
 const loadState = ref<"idle" | "loading" | "error">("idle");
 const errorMessage = ref<string | null>(null);
 const lastFetch = ref<Date | null>(null);
@@ -177,6 +181,7 @@ const savedRouteView = ref<{
 } | null>(null);
 
 let map: LeafletMap | null = null;
+let tileLayer: any = null;
 let refreshTimer: number | null = null;
 let tickTimer: number | null = null;
 let didFitBounds = false;
@@ -195,6 +200,105 @@ const tripsUrl = "/api/proxy/trips";
 const shapesUrl = "/api/proxy/shapes";
 const stopsUrl = "/api/proxy/stops";
 const stopTimesUrl = "/api/proxy/stop_times";
+
+const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const DARK_TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+
+const normalizeHexColor = (value: string): string | null => {
+    if (!value) return null;
+    const raw = value.trim().replace(/^#/, "");
+    if (/^[0-9a-fA-F]{3}$/.test(raw)) {
+        const expanded = raw
+            .split("")
+            .map((ch) => `${ch}${ch}`)
+            .join("");
+        return `#${expanded.toLowerCase()}`;
+    }
+    if (/^[0-9a-fA-F]{6}$/.test(raw)) {
+        return `#${raw.toLowerCase()}`;
+    }
+    return null;
+};
+
+const hexToHsl = (hex: string): [number, number, number] => {
+    const clean = hex.replace("#", "");
+    const r = parseInt(clean.slice(0, 2), 16) / 255;
+    const g = parseInt(clean.slice(2, 4), 16) / 255;
+    const b = parseInt(clean.slice(4, 6), 16) / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    if (max === min) return [0, 0, l];
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h = 0;
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    else if (max === g) h = ((b - r) / d + 2) / 6;
+    else h = ((r - g) / d + 4) / 6;
+    return [h, s, l];
+};
+
+const hslToHex = (h: number, s: number, l: number): string => {
+    const hue2rgb = (p: number, q: number, t: number) => {
+        let tt = t;
+        if (tt < 0) tt += 1;
+        if (tt > 1) tt -= 1;
+        if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+        if (tt < 1 / 2) return q;
+        if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+        return p;
+    };
+    let r: number, g: number, b: number;
+    if (s === 0) {
+        r = g = b = l;
+    } else {
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        r = hue2rgb(p, q, h + 1 / 3);
+        g = hue2rgb(p, q, h);
+        b = hue2rgb(p, q, h - 1 / 3);
+    }
+    const toHex = (v: number) =>
+        Math.round(v * 255)
+            .toString(16)
+            .padStart(2, "0");
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+};
+
+const ensureVisibleColor = (hex: string): string => {
+    if (!hex || hex.length < 3) return hex;
+    const normalized = normalizeHexColor(hex);
+    if (!normalized) return hex;
+    const [h, s, l] = hexToHsl(normalized);
+    if (isDark.value && l < 0.42) {
+        // Lift dark colors just enough for dark map contrast, without washing into white.
+        const newL = Math.max(l, 0.45 + l * 0.3);
+        const newS = s < 0.08 ? 0.08 : s;
+        return hslToHex(h, newS, newL);
+    }
+    if (!isDark.value && l > 0.85) {
+        return hslToHex(h, Math.min(s * 1.2, 1), Math.min(l, 0.7));
+    }
+    return normalized;
+};
+
+const toggleTheme = () => {
+    isDark.value = !isDark.value;
+    document.documentElement.classList.toggle("dark", isDark.value);
+    localStorage.setItem("local-bus:theme", isDark.value ? "dark" : "light");
+    if (map && tileLayer) {
+        map.removeLayer(tileLayer);
+        const L = window.L;
+        tileLayer = L.tileLayer(isDark.value ? DARK_TILES : LIGHT_TILES, {
+            maxZoom: 19,
+            attribution: "&copy; OpenStreetMap & CartoDB",
+        });
+        tileLayer.addTo(map);
+    }
+    applyVehicleFilter();
+    refreshRouteLayersIfReady();
+    if (stopsById.value.size > 0) addAllStops();
+};
 
 const checkMobile = () => {
     isMobile.value = window.innerWidth < 768;
@@ -350,7 +454,7 @@ const addPolyline = (points: ShapePoint[], color: string) => {
     const line = L.polyline(latLngs, {
         color,
         weight: 4,
-        opacity: 0.85,
+        opacity: 0.9,
         pane: "routes",
     });
     line.addTo(map);
@@ -374,13 +478,14 @@ const isStopDimmed = (stopId: number) => {
 
 const getStopMarkerStyle = (stopId: number, isSelected: boolean) => {
     const dimStop = isStopDimmed(stopId);
+    const dark = isDark.value;
     return {
         radius: isSelected ? 7 : 5,
-        color: "#0f172a",
-        weight: isSelected ? 2.5 : dimStop ? 1 : 1.5,
-        fillColor: isSelected ? "#fde68a" : "#ffffff",
-        opacity: dimStop ? 0.6 : 0.9,
-        fillOpacity: dimStop ? 0.6 : isSelected ? 0.95 : 0.9,
+        color: isSelected ? (dark ? "#ffffff" : "#111111") : dark ? "rgba(255,255,255,0.3)" : "#0f172a",
+        weight: isSelected ? 2.5 : dimStop ? (dark ? 0.8 : 1) : (dark ? 1.2 : 1.5),
+        fillColor: isSelected ? (dark ? "#ffffff" : "#111111") : dark ? "rgba(255,255,255,0.7)" : "#ffffff",
+        opacity: dimStop ? (dark ? 0.3 : 0.5) : (dark ? 0.8 : 0.9),
+        fillOpacity: dimStop ? (dark ? 0.2 : 0.5) : isSelected ? 0.9 : (dark ? 0.5 : 0.9),
         pane: "stops",
     };
 };
@@ -474,6 +579,36 @@ const onlineRoutesCount = computed(() => {
     });
     return set.size;
 });
+
+const refreshStatusText = computed(() => {
+    if (lastFetch.value) {
+        return `Updated ${lastFetch.value.toLocaleTimeString()}`;
+    }
+    return "Waiting for data...";
+});
+
+const onStatsInfoEnter = () => {
+    if (isTouchUi.value) return;
+    statsInfoOpen.value = true;
+};
+
+const onStatsInfoLeave = () => {
+    if (isTouchUi.value) return;
+    statsInfoOpen.value = false;
+};
+
+const onStatsInfoTap = () => {
+    if (!isTouchUi.value) return;
+    statsInfoOpen.value = !statsInfoOpen.value;
+};
+
+const onDocumentPointerDown = (event: Event) => {
+    if (!isTouchUi.value || !statsInfoOpen.value) return;
+    const target = event.target as Node | null;
+    if (!target) return;
+    if (statsInfoRef.value?.contains(target)) return;
+    statsInfoOpen.value = false;
+};
 
 const routeIdsToShow = computed(() => {
     if (showAllRoutes.value) {
@@ -788,7 +923,8 @@ const downloadDataset = async (name: string, url: string) => {
 
 const getRouteColor = (routeId: number) => {
     const route = routeById.value.get(routeId);
-    return route?.route_color || "#0f172a";
+    const raw = route?.route_color || (isDark.value ? "#a0a0b0" : "#0f172a");
+    return ensureVisibleColor(raw);
 };
 
 const rememberRouteView = () => {
@@ -1197,10 +1333,11 @@ const initMap = async () => {
     mapInstance.createPane("stops").style.zIndex = "550";
     map = mapInstance;
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    tileLayer = L.tileLayer(isDark.value ? DARK_TILES : LIGHT_TILES, {
         maxZoom: 19,
-        attribution: "&copy; OpenStreetMap contributors",
-    }).addTo(mapInstance);
+        attribution: "&copy; OpenStreetMap & CartoDB",
+    });
+    tileLayer.addTo(mapInstance);
 
     mapInstance.setView([47.16, 27.58], 12);
     L.control.zoom({ position: "bottomright" }).addTo(mapInstance);
@@ -1216,6 +1353,17 @@ const initMap = async () => {
 onMounted(() => {
     checkMobile();
     window.addEventListener("resize", checkMobile);
+    isTouchUi.value =
+        window.matchMedia("(hover: none), (pointer: coarse)").matches ||
+        navigator.maxTouchPoints > 0;
+    document.addEventListener("pointerdown", onDocumentPointerDown);
+    try {
+        const theme = localStorage.getItem("local-bus:theme");
+        if (theme === "dark") {
+            isDark.value = true;
+            document.documentElement.classList.add("dark");
+        }
+    } catch {}
     initMap();
     tickTimer = window.setInterval(() => {
         nowTick.value = Date.now();
@@ -1351,6 +1499,7 @@ watch(
 
 onBeforeUnmount(() => {
     window.removeEventListener("resize", checkMobile);
+    document.removeEventListener("pointerdown", onDocumentPointerDown);
     if (refreshTimer) {
         window.clearInterval(refreshTimer);
     }
@@ -1362,41 +1511,44 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <section class="flex min-h-screen w-full">
+    <section class="overflow-hidden relative w-full h-screen">
         <aside
-            class="hidden md:flex h-screen w-80 xl:w-96 flex-col border-r border-slate-200 bg-white/95 px-4 py-2 backdrop-blur"
+            class="hidden absolute top-4 bottom-4 left-4 flex-col px-4 py-4 w-80 rounded-2xl md:flex z-1000 xl:w-96 glass-strong glow-accent-sm"
         >
-            <div class="mt-2 flex items-center justify-between">
-                <div class="flex items-baseline gap-2">
-                    <div class="text-xs font-semibold text-slate-700">
+            <div class="flex justify-between items-center text-lg">
+                <div class="flex gap-2 items-baseline">
+                    <div class="font-bold tracking-tight text-foreground">
                         Routes
                     </div>
-                    <span class="text-[11px] text-slate-500">
+                    <span class="text-muted-foreground">
                         {{
                             showAllRoutes || selectedRouteIds.length === 0
-                                ? "All routes"
+                                ? "All"
                                 : `${selectedRouteIds.length} selected`
                         }}
                     </span>
                 </div>
                 <Button
                     v-if="selectedRouteIds.length > 0"
-                    size="sm"
                     variant="ghost"
-                    class="text-[11px] h-6"
+                    size="icon"
+                    class="w-7 h-7 text-muted-foreground hover:text-foreground"
+                    aria-label="Reset route selection"
+                    title="Reset route selection"
                     @click="resetRouteSelection"
                 >
-                    Reset
+                    <RotateCcw class="w-3.5 h-3.5" />
                 </Button>
             </div>
-            <div class="mt-2">
+            <div class="relative mt-2">
+                <Search class="absolute left-2.5 top-1/2 w-3.5 h-3.5 -translate-y-1/2 text-muted-foreground/50" />
                 <Input
                     v-model="routeSearch"
-                    placeholder="Search routes"
-                    class="h-8 text-xs"
+                    placeholder="Search routes..."
+                    class="h-10 text-sm pl-8 bg-foreground/[0.03] border-foreground/[0.06] rounded-lg focus-visible:ring-primary/30 focus-visible:border-primary/40"
                 />
             </div>
-            <div class="mt-2 flex-1 overflow-y-auto pr-1">
+            <div class="overflow-y-auto flex-1 pr-1 mt-3 themed-scroll">
                 <RouteList
                     :routes="routes"
                     :filtered-routes="filteredRoutes"
@@ -1411,19 +1563,19 @@ onBeforeUnmount(() => {
             </div>
             <div
                 v-if="routesLoadState === 'loading'"
-                class="mt-3 text-[11px] text-slate-500"
+                class="mt-3 text-[11px] text-muted-foreground"
             >
                 Loading routes...
             </div>
             <div
                 v-if="routesLoadState === 'error'"
-                class="mt-2 text-[11px] text-red-600"
+                class="mt-2 text-[11px] text-destructive"
             >
                 {{ routesError }}
             </div>
             <div
                 v-if="routeIdsToShow.length > 0"
-                class="mt-2 text-[11px] text-slate-500"
+                class="mt-2 text-[11px] text-muted-foreground"
             >
                 <span
                     v-if="
@@ -1438,66 +1590,49 @@ onBeforeUnmount(() => {
             </div>
             <div
                 v-if="shapesError || tripsError || stopsError || stopTimesError"
-                class="mt-2 text-[11px] text-red-600"
+                class="mt-2 text-[11px] text-destructive"
             >
                 {{ shapesError || tripsError || stopsError || stopTimesError }}
             </div>
-            <div class="mt-auto pt-4 text-xs text-slate-500">
-                <span v-if="lastFetch">
-                    Last update: {{ lastFetch.toLocaleTimeString() }}
-                </span>
-                <span v-else>Waiting for data...</span>
-                <div
-                    v-if="loadState === 'loading'"
-                    class="mt-2 text-xs text-slate-500"
-                >
-                    Loading vehicles...
-                </div>
-                <div
-                    v-if="loadState === 'error'"
-                    class="mt-2 text-xs text-red-600"
-                >
-                    {{ errorMessage }}
-                </div>
-            </div>
         </aside>
 
-        <div class="relative flex-1">
+        <div class="absolute inset-0">
             <div
-                class="absolute top-0 left-0 right-0 pt-4 px-4 z-1000 flex items-center gap-3 max-w-full overflow-x-auto scrollbar-hide flex-nowrap"
+                class="absolute top-0 right-0 left-0 md:left-[calc(20rem+2.5rem)] xl:left-[calc(22rem+2.5rem)] pt-4 px-4 z-1000 flex items-center gap-3 max-w-full overflow-x-auto scrollbar-hide flex-nowrap"
             >
                 <Drawer v-model:open="mobileRoutesOpen">
                     <DrawerTrigger as-child>
                         <button
                             type="button"
-                            class="md:hidden flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-slate-600 shadow-sm transition hover:bg-white flex-shrink-0"
+                            class="flex flex-shrink-0 justify-center items-center w-9 h-9 rounded-full border border-border/70 transition md:hidden glass text-muted-foreground hover:text-foreground glow-accent-sm"
                             aria-label="Open routes"
                             title="Routes"
                         >
-                            <Layers class="h-4 w-4" />
+                            <Layers class="w-4 h-4" />
                         </button>
                     </DrawerTrigger>
-                    <DrawerContent class="h-[80vh]">
-                        <DrawerHeader class="border-b pb-4">
-                            <div class="flex items-center justify-between">
-                                <DrawerTitle>Routes</DrawerTitle>
+                    <DrawerContent class="h-[80vh] glass-strong">
+                        <DrawerHeader class="pb-4 border-b border-border">
+                            <div class="flex justify-between items-center">
+                                <DrawerTitle class="text-foreground">Routes</DrawerTitle>
                                 <DrawerClose as-child>
                                     <Button
                                         variant="ghost"
                                         size="icon"
-                                        class="h-8 w-8"
+                                        class="w-8 h-8 text-muted-foreground hover:text-foreground"
                                     >
-                                        <X class="h-4 w-4" />
+                                        <X class="w-4 h-4" />
                                     </Button>
                                 </DrawerClose>
                             </div>
                         </DrawerHeader>
-                        <div class="flex-1 overflow-y-auto p-4">
-                            <div class="mt-2">
+                        <div class="overflow-y-auto flex-1 p-4 themed-scroll">
+                            <div class="relative mt-2">
+                                <Search class="absolute left-2.5 top-1/2 w-3.5 h-3.5 -translate-y-1/2 text-muted-foreground/50" />
                                 <Input
                                     v-model="routeSearch"
-                                    placeholder="Search routes"
-                                    class="h-8 text-xs"
+                                    placeholder="Search routes..."
+                                    class="h-8 text-xs pl-8 bg-foreground/[0.03] border-foreground/[0.06] rounded-lg focus-visible:ring-primary/30 focus-visible:border-primary/40"
                                 />
                             </div>
                             <RouteList
@@ -1518,26 +1653,26 @@ onBeforeUnmount(() => {
 
                 <div
                     v-if="favoriteRouteIds.length > 0"
-                    class="flex h-9 items-center gap-3 rounded-full bg-white/90 px-2 py-1 text-sm shadow-sm flex-shrink-0"
+                    class="flex flex-shrink-0 gap-3 items-center px-2 py-1 h-9 text-sm rounded-full border border-border/70 glass glow-accent-sm"
                 >
                     <button
                         type="button"
-                        class="rounded-full p-1 text-amber-500 shrink-0"
+                        class="p-1 rounded-full text-primary shrink-0"
                         title="Show all favorites"
                         @click="applyAllFavorites"
                     >
-                        <Star class="h-4 w-4 fill-amber-500" />
+                        <Star class="w-4 h-4 fill-primary" />
                     </button>
-                    <div class="flex gap-1.5 flex-nowrap">
+                    <div class="flex flex-nowrap gap-1.5">
                         <button
                             v-for="routeId in favoriteRouteIds"
                             :key="routeId"
                             type="button"
-                            class="rounded-full px-2 py-0.5 font-semibold text-slate-700 transition shrink-0 whitespace-nowrap"
+                            class="px-2 py-0.5 font-semibold whitespace-nowrap rounded-full transition shrink-0"
                             :class="
                                 isRouteSelected(routeId)
-                                    ? 'bg-slate-900 text-white'
-                                    : 'hover:bg-slate-100'
+                                    ? 'bg-foreground text-background hover:bg-foreground/90'
+                                    : 'text-foreground/70 hover:bg-foreground/10'
                             "
                             @click="openRouteFromFavorite(routeId)"
                             :title="`Show ${getRouteShortName(routeId)}`"
@@ -1547,37 +1682,78 @@ onBeforeUnmount(() => {
                     </div>
                 </div>
                 <div
-                    class="flex h-9 items-center gap-1.5 rounded-full bg-white/90 px-3 py-1 text-sm font-semibold shadow-sm flex-shrink-0"
+                    ref="statsInfoRef"
+                    class="relative flex-shrink-0"
+                    @mouseenter="onStatsInfoEnter"
+                    @mouseleave="onStatsInfoLeave"
                 >
-                    <span class="flex items-center gap-2 text-slate-700">
-                        <span
-                            class="h-2 w-2 rounded-full bg-emerald-500"
-                        ></span>
-                        {{ onlineVehiclesCount }}
-                    </span>
-                    <span class="text-slate-400">|</span>
-                    <span class="text-slate-700">
-                        {{ onlineRoutesCount }} routes
-                    </span>
+                    <button
+                        type="button"
+                        class="flex gap-1.5 items-center px-3 py-1 h-9 text-sm font-semibold rounded-full border border-border/70 glass glow-accent-sm"
+                        :aria-label="refreshStatusText"
+                        :title="isTouchUi ? undefined : refreshStatusText"
+                        @click="onStatsInfoTap"
+                        @focus="onStatsInfoEnter"
+                        @blur="onStatsInfoLeave"
+                    >
+                        <span class="flex gap-2 items-center text-foreground">
+                            <span
+                                class="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(52,211,153,0.4)]"
+                            ></span>
+                            {{ onlineVehiclesCount }}
+                        </span>
+                        <span class="text-muted-foreground">|</span>
+                        <span class="text-foreground">
+                            {{ onlineRoutesCount }} routes
+                        </span>
+                    </button>
+                    <div
+                        v-if="statsInfoOpen"
+                        class="absolute top-full right-0 mt-2 min-w-44 rounded-lg border border-border bg-card/95 px-3 py-2 text-[11px] shadow-lg backdrop-blur"
+                    >
+                        <div class="text-foreground">{{ refreshStatusText }}</div>
+                        <div
+                            v-if="loadState === 'loading'"
+                            class="mt-1 text-muted-foreground"
+                        >
+                            loading...
+                        </div>
+                        <div
+                            v-if="loadState === 'error'"
+                            class="mt-1 text-destructive"
+                        >
+                            {{ errorMessage }}
+                        </div>
+                    </div>
                 </div>
+                <button
+                    type="button"
+                    class="flex flex-shrink-0 justify-center items-center w-9 h-9 rounded-full border border-border/70 transition glass text-muted-foreground hover:text-foreground glow-accent-sm"
+                    :aria-label="isDark ? 'Switch to light' : 'Switch to dark'"
+                    :title="isDark ? 'Light mode' : 'Dark mode'"
+                    @click="toggleTheme"
+                >
+                    <Moon v-if="!isDark" class="w-4 h-4" />
+                    <Sun v-else class="w-4 h-4" />
+                </button>
                 <Dialog v-model:open="debugOpen">
                     <DialogTrigger as-child>
                         <button
                             type="button"
-                            class="flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-slate-600 shadow-sm transition hover:bg-white flex-shrink-0"
+                            class="flex flex-shrink-0 justify-center items-center w-9 h-9 rounded-full border border-border/70 transition glass text-muted-foreground hover:text-foreground glow-accent-sm"
                             aria-label="Open debug"
                             title="Debug"
                         >
-                            <Bug class="h-4 w-4" />
+                            <Bug class="w-4 h-4" />
                         </button>
                     </DialogTrigger>
-                    <DialogContent class="max-w-sm">
+                    <DialogContent class="max-w-sm glass-strong">
                         <DialogHeader>
                             <DialogTitle>Debug</DialogTitle>
                         </DialogHeader>
                         <div class="mt-4 space-y-3 text-xs">
                             <label
-                                class="flex items-center gap-2 text-slate-600"
+                                class="flex gap-2 items-center text-muted-foreground"
                             >
                                 <Checkbox
                                     :model-value="showAllVehicles"
@@ -1586,7 +1762,7 @@ onBeforeUnmount(() => {
                                 <span>All vehicles</span>
                             </label>
                             <label
-                                class="flex items-center gap-2 text-slate-600"
+                                class="flex gap-2 items-center text-muted-foreground"
                             >
                                 <Checkbox
                                     :model-value="showAllRoutes"
@@ -1595,7 +1771,7 @@ onBeforeUnmount(() => {
                                 <span>All routes</span>
                             </label>
                             <label
-                                class="flex items-center gap-2 text-slate-600"
+                                class="flex gap-2 items-center text-muted-foreground"
                             >
                                 <Checkbox
                                     :model-value="showStaleVehicles"
@@ -1607,7 +1783,7 @@ onBeforeUnmount(() => {
                                 <span>Show stale vehicles (60m+)</span>
                             </label>
                             <label
-                                class="flex items-center gap-2 text-slate-600"
+                                class="flex gap-2 items-center text-muted-foreground"
                             >
                                 <Checkbox
                                     :model-value="showUnknownRoutes"
@@ -1631,6 +1807,7 @@ onBeforeUnmount(() => {
                                 <Button
                                     size="sm"
                                     variant="outline"
+                                    class=""
                                     @click="downloadDataset('trips', tripsUrl)"
                                 >
                                     trips.txt
@@ -1638,6 +1815,7 @@ onBeforeUnmount(() => {
                                 <Button
                                     size="sm"
                                     variant="outline"
+                                    class=""
                                     @click="
                                         downloadDataset('shapes', shapesUrl)
                                     "
@@ -1647,6 +1825,7 @@ onBeforeUnmount(() => {
                                 <Button
                                     size="sm"
                                     variant="outline"
+                                    class=""
                                     @click="downloadDataset('stops', stopsUrl)"
                                 >
                                     stops.txt
@@ -1654,6 +1833,7 @@ onBeforeUnmount(() => {
                                 <Button
                                     size="sm"
                                     variant="outline"
+                                    class=""
                                     @click="
                                         downloadDataset(
                                             'stop_times',
@@ -1666,6 +1846,7 @@ onBeforeUnmount(() => {
                                 <Button
                                     size="sm"
                                     variant="outline"
+                                    class=""
                                     @click="downloadDataset('vehicles', apiUrl)"
                                 >
                                     vehicles.txt
@@ -1675,24 +1856,24 @@ onBeforeUnmount(() => {
                     </DialogContent>
                 </Dialog>
             </div>
-            <div ref="mapEl" class="relative z-0 h-screen w-full"></div>
+            <div ref="mapEl" class="absolute inset-0 z-0"></div>
 
             <div
                 v-if="selectedVehicle"
-                class="absolute bottom-4 left-4 right-4 z-1000 md:left-auto md:right-4 md:w-80 xl:w-96 rounded-xl bg-white/95 p-4 shadow-lg backdrop-blur"
+                class="absolute right-4 bottom-4 left-4 p-4 rounded-2xl transition-colors z-1000 md:left-auto md:right-4 md:w-80 xl:w-96 glass-strong glow-accent"
             >
                 <div v-if="selectedVehicle">
-                    <div class="flex items-center justify-between">
-                        <h2 class="text-base font-semibold text-slate-900">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-base font-semibold text-foreground">
                             Vehicle {{ selectedVehicle.label }}
                         </h2>
-                        <div class="flex items-center gap-2">
-                            <span class="text-xs text-slate-500">
+                        <div class="flex gap-2 items-center">
+                            <span class="text-xs text-muted-foreground">
                                 ID {{ selectedVehicle.id }}
                             </span>
                             <button
                                 type="button"
-                                class="rounded-full border border-slate-200 bg-white/90 px-2 py-1 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:bg-white"
+                                class="rounded-full bg-foreground/10 px-2 py-1 text-[11px] font-semibold text-muted-foreground transition hover:bg-foreground/20 hover:text-foreground"
                                 @click="clearSelection"
                             >
                                 Close
@@ -1700,11 +1881,11 @@ onBeforeUnmount(() => {
                         </div>
                     </div>
                     <div
-                        class="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-600"
+                        class="grid grid-cols-2 gap-2 mt-3 text-xs text-muted-foreground"
                     >
                         <div>
                             Route:
-                            <span class="font-semibold text-slate-800">
+                            <span class="font-semibold text-foreground">
                                 {{
                                     selectedVehicle.route_id
                                         ? getRouteShortName(
@@ -1716,7 +1897,7 @@ onBeforeUnmount(() => {
                         </div>
                         <div>
                             Direction:
-                            <span class="font-semibold text-slate-800">
+                            <span class="font-semibold text-foreground">
                                 {{
                                     getVehicleDirectionLabel(
                                         selectedVehicle.trip_id,
@@ -1726,13 +1907,13 @@ onBeforeUnmount(() => {
                         </div>
                         <div>
                             Speed:
-                            <span class="font-semibold text-slate-800">
+                            <span class="font-semibold text-foreground">
                                 {{ selectedVehicle.speed }} km/h
                             </span>
                         </div>
                         <div>
                             Updated:
-                            <span class="font-semibold text-slate-800">
+                            <span class="font-semibold text-foreground">
                                 {{
                                     formatRelativeTime(
                                         selectedVehicle.timestamp,
@@ -1742,7 +1923,7 @@ onBeforeUnmount(() => {
                         </div>
                         <div class="col-span-2">
                             Route info:
-                            <span class="font-semibold text-slate-800">
+                            <span class="font-semibold text-foreground">
                                 {{
                                     selectedVehicle.route_id
                                         ? getRouteDescription(
@@ -1754,13 +1935,13 @@ onBeforeUnmount(() => {
                         </div>
                         <div>
                             Bike:
-                            <span class="font-semibold text-slate-800">
+                            <span class="font-semibold text-foreground">
                                 {{ selectedVehicle.bike_accessible }}
                             </span>
                         </div>
                         <div>
                             Wheelchair:
-                            <span class="font-semibold text-slate-800">
+                            <span class="font-semibold text-foreground">
                                 {{ selectedVehicle.wheelchair_accessible }}
                             </span>
                         </div>
@@ -1769,22 +1950,22 @@ onBeforeUnmount(() => {
             </div>
 
             <Drawer v-model:open="mobileStopOpen">
-                <DrawerContent v-if="selectedStop" class="h-[70vh]">
-                    <DrawerHeader class="border-b pb-4">
-                        <div class="flex items-center justify-between">
-                            <DrawerTitle>Stop Details</DrawerTitle>
+                <DrawerContent v-if="selectedStop" class="h-[70vh] glass-strong">
+                    <DrawerHeader class="pb-4 border-b border-border">
+                        <div class="flex justify-between items-center">
+                            <DrawerTitle class="text-foreground">Stop Details</DrawerTitle>
                             <DrawerClose as-child>
                                 <Button
                                     variant="ghost"
                                     size="icon"
-                                    class="h-8 w-8"
+                                    class="w-8 h-8 text-muted-foreground hover:text-foreground"
                                 >
-                                    <X class="h-4 w-4" />
+                                    <X class="w-4 h-4" />
                                 </Button>
                             </DrawerClose>
                         </div>
                     </DrawerHeader>
-                    <div class="flex-1 overflow-y-auto p-4">
+                    <div class="overflow-y-auto flex-1 p-4 themed-scroll">
                         <StopPanel
                             :stop="selectedStop"
                             :stop-route-labels="
@@ -1820,6 +2001,7 @@ onBeforeUnmount(() => {
                             :analytics="getStopAnalytics(selectedStop.stop_id)"
                             :analytics-state="stopAnalyticsState"
                             :analytics-error="stopAnalyticsError"
+                            :ensure-visible-color="ensureVisibleColor"
                         />
                     </div>
                 </DrawerContent>
@@ -1829,16 +2011,16 @@ onBeforeUnmount(() => {
                 <DialogContent
                     v-if="selectedStop"
                     no-overlay
-                    class="hidden md:block left-auto right-4 bottom-4 top-auto w-80 xl:w-96 translate-x-0 translate-y-0"
+                    class="hidden right-4 bottom-4 top-auto left-auto w-80 translate-x-0 translate-y-0 md:block xl:w-96 glass-strong glow-accent"
                 >
                     <DialogHeader>
                         <DialogTitle>Stop details</DialogTitle>
                         <button
                             type="button"
-                            class="absolute right-4 top-4"
+                            class="absolute top-4 right-4 transition text-muted-foreground hover:text-foreground"
                             @click="clearSelection"
                         >
-                            <X class="h-4 w-4" />
+                            <X class="w-4 h-4" />
                         </button>
                     </DialogHeader>
                     <StopPanel
@@ -1903,12 +2085,12 @@ onBeforeUnmount(() => {
 
 :global(.vehicle-marker.is-selected .vehicle-dot) {
     box-shadow:
-        0 6px 12px rgba(15, 23, 42, 0.35),
-        0 0 0 3px rgba(253, 230, 138, 0.9);
+        0 0 10px rgba(0, 0, 0, 0.35),
+        0 0 0 3px rgba(0, 0, 0, 0.2);
 }
 
 :global(.vehicle-marker.is-selected .vehicle-arrow) {
-    filter: drop-shadow(0 3px 6px rgba(15, 23, 42, 0.35));
+    filter: drop-shadow(0 0 6px rgba(0, 0, 0, 0.3));
 }
 
 :global(.vehicle-arrow) {
@@ -1921,7 +2103,7 @@ onBeforeUnmount(() => {
     border-right: 5px solid transparent;
     border-bottom: 10px solid var(--vehicle-color);
     transform: translateX(-50%);
-    filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.25));
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
 }
 
 :global(.vehicle-marker.is-unknown .vehicle-arrow) {
@@ -1939,7 +2121,12 @@ onBeforeUnmount(() => {
     border-radius: 999px;
     border: 2px solid white;
     background: var(--vehicle-color);
-    box-shadow: 0 4px 8px rgba(15, 23, 42, 0.3);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+:global(.dark .vehicle-dot) {
+    border-color: rgba(255, 255, 255, 0.35);
+    box-shadow: 0 0 8px rgba(0, 0, 0, 0.4), 0 0 4px var(--vehicle-color);
 }
 
 .scrollbar-hide::-webkit-scrollbar {

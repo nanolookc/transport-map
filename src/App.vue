@@ -17,7 +17,7 @@
         class="text-xl font-bold cursor-pointer"
       >
         <Button variant="ghost" class="text-xl font-bold"
-          >Moni <span class="text-moni">X</span></Button
+          >Moni <span class="text-primary">X</span></Button
         >
       </h1>
 

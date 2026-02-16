@@ -51,7 +51,11 @@ const props = defineProps<{
     analytics: StopAnalytics | null;
     analyticsState: "idle" | "loading" | "error";
     analyticsError: string | null;
+    ensureVisibleColor?: (hex: string) => string;
 }>();
+
+const safeColor = (hex: string) =>
+    props.ensureVisibleColor ? props.ensureVisibleColor(hex) : hex;
 
 const chartEl = ref<HTMLDivElement | null>(null);
 const chartScrollEl = ref<HTMLDivElement | null>(null);
@@ -151,7 +155,8 @@ const graphPoints = computed(() => {
     graphDays.value.forEach((day, dayIndex) => {
         day.points.forEach((group) => {
             if (!graphSelectedSet.value.has(group.routeId)) return;
-            const color = routeColorMap.value.get(group.routeId) ?? "#0f172a";
+            const rawColor = routeColorMap.value.get(group.routeId) ?? "#111111";
+            const color = safeColor(rawColor);
             group.timestamps.forEach((timestamp, index) => {
                 const minutes = timestampToMinutes(timestamp);
                 points.push({
@@ -281,33 +286,33 @@ const formatPointLabel = (point: {
 <template>
     <div>
         <div class="flex items-center justify-between">
-            <h2 class="text-base font-semibold text-slate-900">
+            <h2 class="text-base font-semibold text-foreground">
                 {{ stop.stop_name }}
             </h2>
-            <span class="text-xs text-slate-500">Stop {{ stop.stop_id }}</span>
+            <span class="text-xs text-muted-foreground">Stop {{ stop.stop_id }}</span>
         </div>
-        <div class="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-600">
+        <div class="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
             <div>
                 Lat:
-                <span class="font-semibold text-slate-800">
+                <span class="font-semibold text-foreground">
                     {{ stop.stop_lat.toFixed(5) }}
                 </span>
             </div>
             <div>
                 Lon:
-                <span class="font-semibold text-slate-800">
+                <span class="font-semibold text-foreground">
                     {{ stop.stop_lon.toFixed(5) }}
                 </span>
             </div>
             <div>
                 Type:
-                <span class="font-semibold text-slate-800">
+                <span class="font-semibold text-foreground">
                     {{ getStopLocationTypeLabel(stop.location_type) }}
                 </span>
             </div>
             <div>
                 Stop code:
-                <span class="font-semibold text-slate-800">
+                <span class="font-semibold text-foreground">
                     {{ stop.stop_code || "N/A" }}
                 </span>
             </div>
@@ -317,6 +322,7 @@ const formatPointLabel = (point: {
                     <Button
                         size="sm"
                         :variant="isStopAllActive ? 'default' : 'outline'"
+                        :class="isStopAllActive ? 'bg-primary hover:bg-primary/80 text-primary-foreground' : ''"
                         @click="onApplyStopRoutes"
                     >
                         All
@@ -330,6 +336,7 @@ const formatPointLabel = (point: {
                                 ? 'default'
                                 : 'outline'
                         "
+                        :class="!showAllRoutes && isRouteSelected(routeId) ? 'bg-primary hover:bg-primary/80 text-primary-foreground' : ''"
                         @click="onToggleStopRoute(routeId)"
                     >
                         {{ getRouteShortName(routeId) }}
@@ -338,39 +345,39 @@ const formatPointLabel = (point: {
             </div>
             <div class="col-span-2">
                 Trips observed:
-                <span class="font-semibold text-slate-800">
+                <span class="font-semibold text-foreground">
                     {{ tripCount }}
                 </span>
             </div>
         </div>
 
         <div class="mt-4">
-            <div class="text-xs font-semibold text-slate-700">Timeline</div>
+            <div class="text-xs font-semibold text-foreground/70">Timeline</div>
         </div>
 
-        <div class="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+        <div class="mt-3 rounded-lg border border-border bg-foreground/[0.02] p-3">
             <div
                 v-if="analyticsState === 'loading'"
-                class="text-[11px] text-slate-500"
+                class="text-[11px] text-muted-foreground"
             >
                 Loading chart...
             </div>
             <div
                 v-else-if="analyticsState === 'error'"
-                class="text-[11px] text-red-600"
+                class="text-[11px] text-destructive"
             >
                 {{ analyticsError }}
             </div>
             <div v-else>
                 <div
                     v-if="!analytics || graphDays.length === 0"
-                    class="text-[11px] text-slate-500"
+                    class="text-[11px] text-muted-foreground"
                 >
                     No history for the last 7 days.
                 </div>
                 <div v-else>
                     <div
-                        class="flex justify-between pl-9 pr-2 text-[10px] text-slate-500"
+                        class="flex justify-between pl-9 pr-2 text-[10px] text-muted-foreground"
                     >
                         <span
                             v-for="day in graphDays"
@@ -382,7 +389,7 @@ const formatPointLabel = (point: {
                     </div>
                     <div
                         ref="chartScrollEl"
-                        class="mt-2 h-96 overflow-y-auto pr-1"
+                        class="mt-2 h-96 overflow-y-auto pr-1 themed-scroll"
                     >
                         <div ref="chartEl" class="relative h-384">
                             <div class="absolute inset-y-0 left-0 w-8">
@@ -392,8 +399,8 @@ const formatPointLabel = (point: {
                                     class="absolute -translate-y-1/2 text-[10px]"
                                     :class="
                                         label.minutes % 60 === 0
-                                            ? 'text-slate-500'
-                                            : 'text-slate-400/70'
+                                            ? 'text-muted-foreground'
+                                            : 'text-muted-foreground/50'
                                     "
                                     :style="{
                                         top: `${((label.minutes - displayRange.min) / displayRange.span) * 100}%`,
@@ -410,8 +417,8 @@ const formatPointLabel = (point: {
                                         class="absolute left-0 right-0 border-t"
                                         :class="
                                             label.minutes % 60 === 0
-                                                ? 'border-slate-200'
-                                                : 'border-slate-200/50'
+                                                ? 'border-border'
+                                                : 'border-border/50'
                                         "
                                         :style="{
                                             top: `${((label.minutes - displayRange.min) / displayRange.span) * 100}%`,
@@ -420,7 +427,7 @@ const formatPointLabel = (point: {
                                     <div
                                         v-for="tick in quarterTicks"
                                         :key="`tick-${tick}`"
-                                        class="absolute left-0 right-0 border-t border-slate-100"
+                                        class="absolute left-0 right-0 border-t border-border/30"
                                         :style="{
                                             top: `${((tick - displayRange.min) / displayRange.span) * 100}%`,
                                         }"
@@ -428,14 +435,14 @@ const formatPointLabel = (point: {
                                     <div
                                         v-for="(_, idx) in graphDays"
                                         :key="`day-${idx}`"
-                                        class="absolute inset-y-0 border-l border-slate-100"
+                                        class="absolute inset-y-0 border-l border-border/30"
                                         :style="{
                                             left: `${((idx + 0.5) / dayCount) * 100}%`,
                                         }"
                                     />
                                     <div
                                         v-if="nowLineStyle"
-                                        class="absolute left-0 right-0 border-t border-blue-400/60"
+                                        class="absolute left-0 right-0 border-t border-primary/50"
                                         :style="nowLineStyle"
                                     />
                                     <Tooltip
@@ -444,11 +451,11 @@ const formatPointLabel = (point: {
                                     >
                                         <TooltipTrigger as-child>
                                             <div
-                                                class="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border"
+                                                class="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border shadow-sm"
                                                 :class="
                                                     point.predicted
-                                                        ? 'bg-white/70 opacity-60'
-                                                        : 'shadow-sm'
+                                                        ? 'bg-transparent opacity-50'
+                                                        : ''
                                                 "
                                                 :style="pointStyle(point)"
                                             />
@@ -466,15 +473,15 @@ const formatPointLabel = (point: {
                     </div>
                 </div>
                 <div
-                    class="mt-2 flex items-center gap-3 text-[10px] text-slate-500"
+                    class="mt-2 flex items-center gap-3 text-[10px] text-muted-foreground"
                 >
                     <span class="flex items-center gap-1">
-                        <span class="h-2 w-2 rounded-full bg-slate-500" />
+                        <span class="h-2 w-2 rounded-full bg-primary" />
                         Actual
                     </span>
                     <span class="flex items-center gap-1">
                         <span
-                            class="h-2 w-2 rounded-full border border-slate-500 bg-white"
+                            class="h-2 w-2 rounded-full border border-primary bg-transparent"
                         />
                         Predicted for today
                     </span>
