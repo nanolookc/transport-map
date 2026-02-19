@@ -408,14 +408,14 @@ const parseTimestamp = (ts: string | undefined | null): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-const loadLatestVehiclesSnapshotCache = async () => {
+const getLatestVehiclesSnapshotFromDb = async () => {
   const latest = await db
     .select({ fetchedAt: vehicleSnapshots.fetchedAt })
     .from(vehicleSnapshots)
     .orderBy(desc(vehicleSnapshots.fetchedAt))
     .limit(1);
   const fetchedAt = latest[0]?.fetchedAt ?? null;
-  if (!fetchedAt) return false;
+  if (!fetchedAt) return null;
   const rows = await db
     .select({
       vehicleId: vehicleSnapshots.vehicleId,
@@ -431,8 +431,7 @@ const loadLatestVehiclesSnapshotCache = async () => {
     })
     .from(vehicleSnapshots)
     .where(sql`${vehicleSnapshots.fetchedAt} = ${fetchedAt}`);
-  latestVehiclesFetchedAt = fetchedAt;
-  latestVehiclesCache = rows.map((row) => ({
+  const vehicles = rows.map((row) => ({
     id: row.vehicleId,
     label: String(row.vehicleId),
     latitude: row.latitude ?? 0,
@@ -445,6 +444,14 @@ const loadLatestVehiclesSnapshotCache = async () => {
     bike_accessible: row.bikeAccessible ?? "",
     wheelchair_accessible: row.wheelchairAccessible ?? "",
   }));
+  return { fetchedAt, vehicles };
+};
+
+const loadLatestVehiclesSnapshotCache = async () => {
+  const latest = await getLatestVehiclesSnapshotFromDb();
+  if (!latest) return false;
+  latestVehiclesFetchedAt = latest.fetchedAt;
+  latestVehiclesCache = latest.vehicles;
   return latestVehiclesCache.length > 0;
 };
 
@@ -727,6 +734,19 @@ const app = new Elysia()
       return new Response("Not found", { status: 404 });
     }
     if (resource === "vehicles") {
+      // API-only pods (INGEST_ENABLED=false) must read from DB on every request,
+      // otherwise in-memory cache can become stale per pod in multi-replica setups.
+      if (!INGEST_ENABLED) {
+        const latestFromDb = await getLatestVehiclesSnapshotFromDb();
+        if (latestFromDb) {
+          return Response.json({
+            fetchedAt: latestFromDb.fetchedAt.toISOString(),
+            vehicles: latestFromDb.vehicles,
+          });
+        }
+        return Response.json({ fetchedAt: null, vehicles: [] });
+      }
+
       if (latestVehiclesCache.length === 0) {
         await loadLatestVehiclesSnapshotCache();
       }
@@ -736,6 +756,14 @@ const app = new Elysia()
           vehicles: latestVehiclesCache,
         });
       }
+      const latestFromDb = await getLatestVehiclesSnapshotFromDb();
+      if (latestFromDb) {
+        return Response.json({
+          fetchedAt: latestFromDb.fetchedAt.toISOString(),
+          vehicles: latestFromDb.vehicles,
+        });
+      }
+      return Response.json({ fetchedAt: null, vehicles: [] });
     }
     const data = await fetchJson(resource);
     return Response.json(data);
