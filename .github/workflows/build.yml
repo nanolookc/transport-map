@@ -4,6 +4,10 @@ on:
   push:
     branches: [ "main" ]
 
+concurrency:
+  group: deploy-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
@@ -36,3 +40,36 @@ jobs:
           file: docker/Dockerfile.backend
           push: true
           tags: ghcr.io/nanolookc/transport-map-backend:sha-${{ github.sha }}
+
+      - name: Checkout cluster repo
+        uses: actions/checkout@v4
+        with:
+          repository: nanolook-org/cluster
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.CLUSTER_REPO_TOKEN }}
+          path: cluster
+
+      - name: Update cluster values
+        run: |
+          python3 cluster/scripts/update-image-tags.py \
+            cluster/values/transit/values.yaml \
+            frontend.image.tag=sha-${GITHUB_SHA} \
+            backend.image.tag=sha-${GITHUB_SHA}
+
+      - name: Commit cluster values
+        run: |
+          cd cluster
+          git checkout main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- values/transit/values.yaml; then
+            echo "No cluster changes to commit"
+            exit 0
+          fi
+
+          git add values/transit/values.yaml
+          git commit -m "chore(transit): deploy sha-${GITHUB_SHA}"
+          git pull --rebase origin main
+          git push origin HEAD:main
