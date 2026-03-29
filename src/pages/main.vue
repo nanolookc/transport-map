@@ -32,8 +32,8 @@ declare global {
 type Vehicle = {
     id: number;
     label: string;
-    latitude: number;
-    longitude: number;
+    latitude: number | null;
+    longitude: number | null;
     timestamp: string;
     speed: number;
     route_id: number;
@@ -413,6 +413,7 @@ const computeBearingFromShape = (
 };
 
 const getVehicleRouteBearing = (vehicle: Vehicle) => {
+    if (!hasValidVehiclePosition(vehicle)) return null;
     if (!vehicle.trip_id) return null;
     const trip = tripById.value.get(vehicle.trip_id);
     if (!trip) return null;
@@ -952,16 +953,35 @@ const clearSelection = () => {
     restoreRouteView();
 };
 
+const hasValidVehiclePosition = (
+    vehicle: Vehicle,
+): vehicle is Vehicle & { latitude: number; longitude: number } => {
+    if (
+        !Number.isFinite(vehicle.latitude) ||
+        !Number.isFinite(vehicle.longitude)
+    ) {
+        return false;
+    }
+
+    if (
+        vehicle.latitude! < -90 ||
+        vehicle.latitude! > 90 ||
+        vehicle.longitude! < -180 ||
+        vehicle.longitude! > 180
+    ) {
+        return false;
+    }
+
+    return !(vehicle.latitude === 0 && vehicle.longitude === 0);
+};
+
 const updateMarkers = (vehicles: Vehicle[]) => {
     if (!map) return;
     const L = window.L;
     const seen = new Set<number>();
 
     vehicles.forEach((vehicle) => {
-        if (
-            typeof vehicle.latitude !== "number" ||
-            typeof vehicle.longitude !== "number"
-        ) {
+        if (!hasValidVehiclePosition(vehicle)) {
             return;
         }
         seen.add(vehicle.id);
@@ -1043,11 +1063,7 @@ const updateMarkers = (vehicles: Vehicle[]) => {
     });
 
     if (!didFitBounds && vehicles.length > 0) {
-        const boundsVehicles = vehicles.filter(
-            (vehicle) =>
-                typeof vehicle.latitude === "number" &&
-                typeof vehicle.longitude === "number",
-        );
+        const boundsVehicles = vehicles.filter(hasValidVehiclePosition);
         if (boundsVehicles.length === 0) return;
         const bounds = L.latLngBounds(
             boundsVehicles.map((vehicle) => [

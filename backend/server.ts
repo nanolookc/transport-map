@@ -16,8 +16,8 @@ import { db, sqlClient } from "./db/client";
 type Vehicle = {
   id: number;
   label: string;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   timestamp: string;
   speed: number;
   route_id: number;
@@ -117,6 +117,30 @@ let latestVehiclesFetchedAt: Date | null = null;
 let lastDbErrorAt: Date | null = null;
 let lastDbErrorMessage: string | null = null;
 let lastDbSuccessAt: Date | null = null;
+
+const normalizeVehiclePosition = (
+  latitude: number | null | undefined,
+  longitude: number | null | undefined,
+) => {
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return { latitude: null, longitude: null };
+  }
+
+  if (
+    latitude! < -90 ||
+    latitude! > 90 ||
+    longitude! < -180 ||
+    longitude! > 180
+  ) {
+    return { latitude: null, longitude: null };
+  }
+
+  if (latitude === 0 && longitude === 0) {
+    return { latitude: null, longitude: null };
+  }
+
+  return { latitude, longitude };
+};
 
 const toErrorMessage = (error: unknown) => {
   if (error instanceof Error) return error.message;
@@ -432,10 +456,9 @@ const getLatestVehiclesSnapshotFromDb = async () => {
     .from(vehicleSnapshots)
     .where(sql`${vehicleSnapshots.fetchedAt} = ${fetchedAt}`);
   const vehicles = rows.map((row) => ({
+    ...normalizeVehiclePosition(row.latitude, row.longitude),
     id: row.vehicleId,
     label: String(row.vehicleId),
-    latitude: row.latitude ?? 0,
-    longitude: row.longitude ?? 0,
     timestamp: (row.timestamp ?? fetchedAt).toISOString(),
     speed: row.speed ?? 0,
     route_id: row.routeId ?? -1,
@@ -539,7 +562,10 @@ const recordStopVisits = async (fetchedAt: Date, vehicles: Vehicle[]) => {
 
 const pollVehicles = async () => {
   const fetchedAt = new Date();
-  const vehicles = await fetchJson<Vehicle[]>("vehicles");
+  const vehicles = (await fetchJson<Vehicle[]>("vehicles")).map((vehicle) => ({
+    ...vehicle,
+    ...normalizeVehiclePosition(vehicle.latitude, vehicle.longitude),
+  }));
   // Normalize timestamps to ensure consistent timezone handling (assume UTC if no timezone info)
   latestVehiclesCache = vehicles.map((vehicle) => {
     if (!vehicle.timestamp) {
