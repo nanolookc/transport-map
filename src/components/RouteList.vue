@@ -14,6 +14,7 @@ const props = defineProps<{
     routes: Route[];
     filteredRoutes: Route[];
     unknownRouteIds: number[];
+    isTouchUi: boolean;
     isRouteSelected: (routeId: number) => boolean;
     isRouteFavorite: (routeId: number) => boolean;
     toggleRouteSelection: (
@@ -48,11 +49,13 @@ const toggleRoute = (routeId: number) => {
             v-for="route in filteredRoutes"
             :key="route.route_id"
             type="button"
-            class="flex relative gap-3 items-center px-0 py-0 text-left rounded-xl border border-transparent transition-all duration-200 group"
+            class="route-item flex relative gap-3 items-center px-0 py-0 text-left rounded-xl border border-transparent transition-all duration-200 group"
             :class="[
                 isRouteSelected(route.route_id)
                     ? 'bg-primary/10 dark:bg-primary/15 border-primary/20 shadow-sm'
-                    : 'hover:bg-foreground/[0.04]',
+                    : !isTouchUi
+                      ? 'hover:bg-foreground/[0.04]'
+                      : '',
                 isRouteFavorite(route.route_id) && !isRouteSelected(route.route_id)
                     ? 'bg-primary/[0.03]'
                     : '',
@@ -73,7 +76,9 @@ const toggleRoute = (routeId: number) => {
                     class="text-sm leading-tight whitespace-nowrap route-name"
                     :class="isRouteSelected(route.route_id)
                         ? 'text-foreground font-semibold'
-                        : 'font-medium group-hover:text-foreground/80'"
+                        : !isTouchUi
+                          ? 'font-medium group-hover:text-foreground/80'
+                          : 'font-medium'"
                 >
                     <span class="route-name-inner">{{ route.route_long_name }}</span>
                 </div>
@@ -86,7 +91,9 @@ const toggleRoute = (routeId: number) => {
                 :class="[
                     isRouteFavorite(route.route_id)
                         ? 'opacity-100 text-primary'
-                        : 'opacity-0 group-hover:opacity-50 text-muted-foreground hover:text-primary hover:opacity-100',
+                        : isTouchUi
+                          ? 'opacity-100 text-muted-foreground'
+                          : 'opacity-0 group-hover:opacity-50 text-muted-foreground hover:text-primary hover:opacity-100',
                 ]"
                 @click.stop="toggleFavoriteRoute(route.route_id)"
                 :aria-label="`Toggle favorite for ${route.route_short_name}`"
@@ -117,7 +124,9 @@ const toggleRoute = (routeId: number) => {
             class="flex relative gap-2.5 items-center px-2.5 py-2 text-left rounded-xl border border-transparent transition-all duration-200 group"
             :class="isRouteSelected(routeId)
                 ? 'bg-primary/10 dark:bg-primary/15 border-primary/20 shadow-sm'
-                : 'hover:bg-foreground/[0.04]'"
+                : !isTouchUi
+                  ? 'hover:bg-foreground/[0.04]'
+                  : ''"
             @click="toggleRoute(routeId)"
         >
             <div
@@ -140,15 +149,17 @@ const toggleRoute = (routeId: number) => {
     -webkit-mask-image: linear-gradient(to right, black 85%, transparent 100%);
 }
 
-.group:hover .route-name .route-name-inner {
-    display: inline-block;
-    animation: marquee 4s linear infinite;
-    animation-delay: 0.3s;
-}
+@media (hover: hover) and (pointer: fine) {
+    .route-item:hover .route-name .route-name-inner {
+        display: inline-block;
+        animation: marquee 4s linear infinite;
+        animation-delay: 0.3s;
+    }
 
-.group:hover .route-name {
-    mask-image: none;
-    -webkit-mask-image: none;
+    .route-item:hover .route-name {
+        mask-image: none;
+        -webkit-mask-image: none;
+    }
 }
 
 @keyframes marquee {
