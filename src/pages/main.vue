@@ -103,6 +103,42 @@ type StopAnalytics = {
     }>;
 };
 
+type LiveStopArrivals = {
+    stop: Stop;
+    fetchedAt: string | null;
+    arrivals: Array<{
+        vehicleId: number;
+        routeId: number;
+        routeShortName: string | null;
+        routeLongName: string | null;
+        routeColor: string | null;
+        tripId: string;
+        directionId: number;
+        etaSeconds: number | null;
+        arrivalAt: string | null;
+        distanceMeters: number | null;
+        status:
+            | "arriving"
+            | "moving"
+            | "stopped_on_route"
+            | "waiting_at_terminal"
+            | "arrived_terminal"
+            | "off_route"
+            | "stale"
+            | "unknown";
+        confidence: "high" | "medium" | "low";
+        reason: string;
+        vehicleTimestamp: string | null;
+        fetchedAt: string;
+    }>;
+    diagnostics: {
+        liveVehicles: number;
+        candidateTrips: number;
+        excludedPassedStop: number;
+        excludedUnusableState: number;
+    };
+};
+
 type LeafletMap = {
     setView: (coords: [number, number], zoom: number) => void;
     fitBounds: (
@@ -172,6 +208,9 @@ const stopTimesByStopId = ref<Map<number, Set<string>>>(new Map());
 const stopAnalyticsCache = ref<Map<number, StopAnalytics>>(new Map());
 const stopAnalyticsState = ref<"idle" | "loading" | "error">("idle");
 const stopAnalyticsError = ref<string | null>(null);
+const liveStopArrivalsCache = ref<Map<number, LiveStopArrivals>>(new Map());
+const liveStopArrivalsState = ref<"idle" | "loading" | "error">("idle");
+const liveStopArrivalsError = ref<string | null>(null);
 const selectedStopId = computed(() => selectedStop.value?.stop_id);
 const savedRouteView = ref<{
     showAllRoutes: boolean;
@@ -183,6 +222,7 @@ const savedRouteView = ref<{
 let map: LeafletMap | null = null;
 let tileLayer: any = null;
 let refreshTimer: number | null = null;
+let liveStopTimer: number | null = null;
 let tickTimer: number | null = null;
 let didFitBounds = false;
 const markersById = new Map<number, LeafletMarker>();
@@ -507,6 +547,7 @@ const addAllStops = () => {
             selectedStop.value = stop;
             selectedVehicle.value = null;
             fetchStopAnalytics(stop.stop_id);
+            fetchLiveStopArrivals(stop.stop_id);
         });
         marker.addTo(map);
         stopLayers.push(marker);
@@ -789,6 +830,26 @@ const fetchStopAnalytics = async (stopId: number) => {
     }
 };
 
+const fetchLiveStopArrivals = async (stopId: number) => {
+    liveStopArrivalsState.value = liveStopArrivalsCache.value.has(stopId)
+        ? "idle"
+        : "loading";
+    liveStopArrivalsError.value = null;
+    try {
+        const response = await fetch(`/api/live/stop/${stopId}`);
+        if (!response.ok) {
+            throw new Error(`Live ETA error: ${response.status}`);
+        }
+        const data = (await response.json()) as LiveStopArrivals;
+        liveStopArrivalsCache.value.set(stopId, data);
+        liveStopArrivalsState.value = "idle";
+    } catch (error) {
+        liveStopArrivalsState.value = "error";
+        liveStopArrivalsError.value =
+            error instanceof Error ? error.message : "Failed to load live ETA";
+    }
+};
+
 const toggleFavoriteRoute = (routeId: number) => {
     const favorites = new Set(favoriteRouteIds.value);
     if (favorites.has(routeId)) {
@@ -899,6 +960,9 @@ const isStopAllActive = (stopId: number) => {
 
 const getStopAnalytics = (stopId: number) =>
     stopAnalyticsCache.value.get(stopId) ?? null;
+
+const getLiveStopArrivals = (stopId: number) =>
+    liveStopArrivalsCache.value.get(stopId) ?? null;
 
 const downloadDataset = async (name: string, url: string) => {
     try {
@@ -1364,6 +1428,11 @@ const initMap = async () => {
     fetchStopTimes();
     await fetchVehicles();
     refreshTimer = window.setInterval(fetchVehicles, 20000);
+    liveStopTimer = window.setInterval(() => {
+        const stopId = selectedStop.value?.stop_id;
+        if (stopId == null) return;
+        fetchLiveStopArrivals(stopId);
+    }, 20000);
 };
 
 onMounted(() => {
@@ -1428,6 +1497,10 @@ watch(
 
 watch(selectedStop, () => {
     updateSelectedStopHighlight();
+    if (selectedStop.value) {
+        fetchStopAnalytics(selectedStop.value.stop_id);
+        fetchLiveStopArrivals(selectedStop.value.stop_id);
+    }
     if (selectedStop.value && isMobile.value) {
         mobileStopOpen.value = true;
     } else if (selectedStop.value && !isMobile.value) {
@@ -1518,6 +1591,9 @@ onBeforeUnmount(() => {
     document.removeEventListener("pointerdown", onDocumentPointerDown);
     if (refreshTimer) {
         window.clearInterval(refreshTimer);
+    }
+    if (liveStopTimer) {
+        window.clearInterval(liveStopTimer);
     }
     if (tickTimer) {
         window.clearInterval(tickTimer);
@@ -2019,6 +2095,11 @@ onBeforeUnmount(() => {
                             :analytics="getStopAnalytics(selectedStop.stop_id)"
                             :analytics-state="stopAnalyticsState"
                             :analytics-error="stopAnalyticsError"
+                            :live-arrivals="
+                                getLiveStopArrivals(selectedStop.stop_id)
+                            "
+                            :live-arrivals-state="liveStopArrivalsState"
+                            :live-arrivals-error="liveStopArrivalsError"
                             :ensure-visible-color="ensureVisibleColor"
                         />
                     </div>
@@ -2070,6 +2151,10 @@ onBeforeUnmount(() => {
                         :analytics="getStopAnalytics(selectedStop.stop_id)"
                         :analytics-state="stopAnalyticsState"
                         :analytics-error="stopAnalyticsError"
+                        :live-arrivals="getLiveStopArrivals(selectedStop.stop_id)"
+                        :live-arrivals-state="liveStopArrivalsState"
+                        :live-arrivals-error="liveStopArrivalsError"
+                        :ensure-visible-color="ensureVisibleColor"
                     />
                 </DialogContent>
             </Dialog>

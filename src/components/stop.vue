@@ -36,6 +36,41 @@ type StopAnalytics = {
     }>;
 };
 
+type LiveStopArrivals = {
+    fetchedAt: string | null;
+    arrivals: Array<{
+        vehicleId: number;
+        routeId: number;
+        routeShortName: string | null;
+        routeLongName: string | null;
+        routeColor: string | null;
+        tripId: string;
+        directionId: number;
+        etaSeconds: number | null;
+        arrivalAt: string | null;
+        distanceMeters: number | null;
+        status:
+            | "arriving"
+            | "moving"
+            | "stopped_on_route"
+            | "waiting_at_terminal"
+            | "arrived_terminal"
+            | "off_route"
+            | "stale"
+            | "unknown";
+        confidence: "high" | "medium" | "low";
+        reason: string;
+        vehicleTimestamp: string | null;
+        fetchedAt: string;
+    }>;
+    diagnostics: {
+        liveVehicles: number;
+        candidateTrips: number;
+        excludedPassedStop: number;
+        excludedUnusableState: number;
+    };
+};
+
 const props = defineProps<{
     stop: Stop;
     stopRouteLabels: string[];
@@ -51,6 +86,9 @@ const props = defineProps<{
     analytics: StopAnalytics | null;
     analyticsState: "idle" | "loading" | "error";
     analyticsError: string | null;
+    liveArrivals: LiveStopArrivals | null;
+    liveArrivalsState: "idle" | "loading" | "error";
+    liveArrivalsError: string | null;
     ensureVisibleColor?: (hex: string) => string;
 }>();
 
@@ -281,6 +319,35 @@ const formatPointLabel = (point: {
     point.predicted
         ? `Predicted ${formatTimestamp(point.timestamp)}`
         : formatTimestamp(point.timestamp);
+
+const liveArrivalRows = computed(() => props.liveArrivals?.arrivals ?? []);
+
+const formatEta = (seconds: number | null, status: string) => {
+    if (status === "arriving") return "arriving";
+    if (seconds === null) return null;
+    if (seconds < 60) return "<1 min";
+    const minutes = Math.max(1, Math.round(seconds / 60));
+    return `${minutes} min`;
+};
+
+const formatLiveStatus = (status: string) => {
+    if (status === "waiting_at_terminal") return "standing at terminal";
+    if (status === "stopped_on_route") return "stopped";
+    if (status === "moving") return "on the way";
+    if (status === "arriving") return "arriving";
+    return status.replace(/_/g, " ");
+};
+
+const formatDistance = (meters: number | null) => {
+    if (meters === null) return "";
+    if (meters < 1000) return `${meters} m`;
+    return `${(meters / 1000).toFixed(1)} km`;
+};
+
+const formatFetchedAt = (value: string | null) => {
+    if (!value) return "never";
+    return formatTimestamp(value);
+};
 </script>
 
 <template>
@@ -348,6 +415,95 @@ const formatPointLabel = (point: {
                 <span class="font-semibold text-foreground">
                     {{ tripCount }}
                 </span>
+            </div>
+        </div>
+
+        <div class="mt-4">
+            <div class="flex items-center justify-between">
+                <div class="text-xs font-semibold text-foreground/70">
+                    Live arrivals
+                </div>
+                <div class="text-[10px] text-muted-foreground">
+                    updated {{ formatFetchedAt(liveArrivals?.fetchedAt ?? null) }}
+                </div>
+            </div>
+            <div class="mt-2 rounded-lg border border-border bg-primary/[0.04] p-3">
+                <div
+                    v-if="liveArrivalsState === 'loading'"
+                    class="text-[11px] text-muted-foreground"
+                >
+                    Loading live ETA...
+                </div>
+                <div
+                    v-else-if="liveArrivalsState === 'error'"
+                    class="text-[11px] text-destructive"
+                >
+                    {{ liveArrivalsError }}
+                </div>
+                <div
+                    v-else-if="liveArrivalRows.length === 0"
+                    class="text-[11px] text-muted-foreground"
+                >
+                    No live vehicles currently matched to this stop.
+                </div>
+                <div v-else class="space-y-2">
+                    <div
+                        v-for="arrival in liveArrivalRows.slice(0, 8)"
+                        :key="`${arrival.vehicleId}-${arrival.tripId}`"
+                        class="rounded-md border border-border/70 bg-background/60 p-2"
+                    >
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <div class="flex items-center gap-2">
+                                    <span
+                                        class="h-2.5 w-2.5 rounded-full"
+                                        :style="{
+                                            backgroundColor: safeColor(arrival.routeColor ?? '#111111'),
+                                        }"
+                                    />
+                                    <span class="font-semibold text-foreground">
+                                        {{ arrival.routeShortName ?? arrival.routeId }}
+                                    </span>
+                                    <span class="text-[10px] text-muted-foreground">
+                                        #{{ arrival.vehicleId }}
+                                    </span>
+                                </div>
+                                <div class="mt-1 text-[10px] text-muted-foreground">
+                                    {{ formatLiveStatus(arrival.status) }}
+                                    <span v-if="formatDistance(arrival.distanceMeters)">
+                                        · {{ formatDistance(arrival.distanceMeters) }}
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <div
+                                    class="text-sm font-semibold"
+                                    :class="
+                                        arrival.etaSeconds === null
+                                            ? 'text-muted-foreground'
+                                            : 'text-foreground'
+                                    "
+                                >
+                                    {{
+                                        formatEta(
+                                            arrival.etaSeconds,
+                                            arrival.status,
+                                        ) ?? "no ETA"
+                                    }}
+                                </div>
+                                <div class="text-[10px] text-muted-foreground">
+                                    {{ arrival.confidence }}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div
+                        v-if="liveArrivalRows.length > 8"
+                        class="text-[10px] text-muted-foreground"
+                    >
+                        +{{ liveArrivalRows.length - 8 }} more matched vehicles
+                    </div>
+                </div>
             </div>
         </div>
 

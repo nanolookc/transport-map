@@ -143,3 +143,135 @@ export const routeDailyStats = pgTable(
         routeIdx: index("route_daily_stats_route_id_idx").on(table.routeId),
     }),
 );
+
+export const vehicleLiveStates = pgTable(
+    "vehicle_live_states",
+    {
+        vehicleId: integer("vehicle_id").primaryKey(),
+        routeId: integer("route_id"),
+        tripId: text("trip_id"),
+        directionId: integer("direction_id"),
+        shapeId: text("shape_id"),
+        fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+        vehicleTimestamp: timestamp("vehicle_timestamp", {
+            withTimezone: true,
+        }),
+        latitude: doublePrecision("latitude"),
+        longitude: doublePrecision("longitude"),
+        speedKmh: doublePrecision("speed_kmh"),
+        progressMeters: doublePrecision("progress_meters"),
+        distanceFromShapeMeters: doublePrecision("distance_from_shape_meters"),
+        segmentIndex: integer("segment_index"),
+        status: text("status").notNull(),
+        confidence: text("confidence").notNull(),
+        reason: text("reason").notNull(),
+        effectiveSpeedMps: doublePrecision("effective_speed_mps"),
+        updatedAt: timestamp("updated_at", { withTimezone: true })
+            .defaultNow()
+            .notNull(),
+    },
+    (table) => ({
+        routeIdx: index("vehicle_live_states_route_id_idx").on(table.routeId),
+        tripIdx: index("vehicle_live_states_trip_id_idx").on(table.tripId),
+        fetchedIdx: index("vehicle_live_states_fetched_at_idx").on(
+            table.fetchedAt,
+        ),
+        statusIdx: index("vehicle_live_states_status_idx").on(table.status),
+    }),
+);
+
+export const vehicleProgressSamples = pgTable(
+    "vehicle_progress_samples",
+    {
+        id: serial("id").primaryKey(),
+        vehicleId: integer("vehicle_id").notNull(),
+        routeId: integer("route_id"),
+        tripId: text("trip_id"),
+        fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+        vehicleTimestamp: timestamp("vehicle_timestamp", {
+            withTimezone: true,
+        }),
+        progressMeters: doublePrecision("progress_meters"),
+        speedKmh: doublePrecision("speed_kmh"),
+        status: text("status").notNull(),
+    },
+    (table) => ({
+        vehicleFetchedIdx: index(
+            "vehicle_progress_samples_vehicle_fetched_idx",
+        ).on(table.vehicleId, table.fetchedAt),
+        tripFetchedIdx: index("vehicle_progress_samples_trip_fetched_idx").on(
+            table.tripId,
+            table.fetchedAt,
+        ),
+        fetchedIdx: index("vehicle_progress_samples_fetched_at_idx").on(
+            table.fetchedAt,
+        ),
+    }),
+);
+
+export const stopSegmentTravelTimes = pgTable(
+    "stop_segment_travel_times",
+    {
+        id: serial("id").primaryKey(),
+        routeId: integer("route_id").notNull(),
+        directionId: integer("direction_id").notNull(),
+        tripId: text("trip_id").notNull(),
+        vehicleId: integer("vehicle_id").notNull(),
+        fromStopId: integer("from_stop_id").notNull(),
+        toStopId: integer("to_stop_id").notNull(),
+        fromStopSequence: integer("from_stop_sequence").notNull(),
+        toStopSequence: integer("to_stop_sequence").notNull(),
+        departedAt: timestamp("departed_at", { withTimezone: true }).notNull(),
+        arrivedAt: timestamp("arrived_at", { withTimezone: true }).notNull(),
+        travelSeconds: integer("travel_seconds").notNull(),
+        dayType: text("day_type").notNull(),
+        hourOfDay: integer("hour_of_day").notNull(),
+        createdAt: timestamp("created_at", { withTimezone: true })
+            .defaultNow()
+            .notNull(),
+    },
+    (table) => ({
+        segmentTimeIdx: index("stop_segment_travel_times_segment_time_idx").on(
+            table.routeId,
+            table.directionId,
+            table.fromStopId,
+            table.toStopId,
+            table.dayType,
+            table.hourOfDay,
+        ),
+        observedIdx: index("stop_segment_travel_times_arrived_at_idx").on(
+            table.arrivedAt,
+        ),
+    }),
+);
+
+export const stopSegmentStats = pgTable(
+    "stop_segment_stats",
+    {
+        routeId: integer("route_id").notNull(),
+        directionId: integer("direction_id").notNull(),
+        fromStopId: integer("from_stop_id").notNull(),
+        toStopId: integer("to_stop_id").notNull(),
+        dayType: text("day_type").notNull(),
+        hourOfDay: integer("hour_of_day").notNull(),
+        sampleCount: integer("sample_count").notNull(),
+        p50Seconds: doublePrecision("p50_seconds").notNull(),
+        p75Seconds: doublePrecision("p75_seconds").notNull(),
+        p90Seconds: doublePrecision("p90_seconds").notNull(),
+        updatedAt: timestamp("updated_at", { withTimezone: true })
+            .defaultNow()
+            .notNull(),
+    },
+    (table) => ({
+        pk: primaryKey({
+            columns: [
+                table.routeId,
+                table.directionId,
+                table.fromStopId,
+                table.toStopId,
+                table.dayType,
+                table.hourOfDay,
+            ],
+        }),
+    }),
+);
