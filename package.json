@@ -4,10 +4,12 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "sh -c 'trap \"kill 0\" INT TERM EXIT; bun run dev:backend & bun run dev:frontend & wait'",
+    "dev:frontend": "vite",
+    "dev:backend": "BACKEND_PORT=${BACKEND_PORT:-3007} bun run --watch backend/server.ts",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
-    "backend": "bun run --watch backend/server.ts",
+    "backend": "bun run dev:backend",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push"
   },

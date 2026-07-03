@@ -1603,9 +1603,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <section class="overflow-hidden relative w-full h-screen">
+    <section class="overflow-hidden relative w-full h-screen md:flex">
         <aside
-            class="hidden absolute top-4 bottom-4 left-4 flex-col px-4 py-4 w-80 rounded-2xl md:flex z-1000 xl:w-96 glass-strong glow-accent-sm"
+            class="hidden flex-col shrink-0 px-4 py-4 w-80 h-full border-r md:flex xl:w-96 bg-background/95 border-border"
         >
             <div class="flex justify-between items-center text-lg">
                 <div class="flex gap-2 items-baseline">
@@ -1689,9 +1689,9 @@ onBeforeUnmount(() => {
             </div>
         </aside>
 
-        <div class="absolute inset-0">
+        <div class="absolute inset-0 md:relative md:flex-1 md:min-w-0">
             <div
-                class="absolute top-0 right-0 left-0 md:left-[calc(20rem+2.5rem)] xl:left-[calc(22rem+2.5rem)] pt-4 px-4 z-1000 flex items-center gap-3 max-w-full overflow-x-auto scrollbar-hide flex-nowrap"
+                class="absolute top-0 right-0 left-0 pt-4 px-4 z-1000 flex items-center gap-3 max-w-full overflow-x-auto scrollbar-hide flex-nowrap"
             >
                 <Drawer v-model:open="mobileRoutesOpen">
                     <DrawerTrigger as-child>
