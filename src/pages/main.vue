@@ -101,6 +101,11 @@ type StopAnalytics = {
             predicted: boolean;
         }>;
     }>;
+    window: {
+        offset: number;
+        canGoOlder: boolean;
+        canGoNewer: boolean;
+    };
 };
 
 type LiveStopArrivals = {
@@ -205,7 +210,8 @@ const stopTimesError = ref<string | null>(null);
 const shapesById = ref<Map<string, ShapePoint[]>>(new Map());
 const stopsById = ref<Map<number, Stop>>(new Map());
 const stopTimesByStopId = ref<Map<number, Set<string>>>(new Map());
-const stopAnalyticsCache = ref<Map<number, StopAnalytics>>(new Map());
+const stopAnalyticsCache = ref<Map<string, StopAnalytics>>(new Map());
+const stopAnalyticsOffset = ref(0);
 const stopAnalyticsState = ref<"idle" | "loading" | "error">("idle");
 const stopAnalyticsError = ref<string | null>(null);
 const liveStopArrivalsCache = ref<Map<number, LiveStopArrivals>>(new Map());
@@ -809,25 +815,40 @@ const toggleRouteSelection = (
     selectedRouteIds.value = Array.from(selected);
 };
 
-const fetchStopAnalytics = async (stopId: number) => {
-    if (stopAnalyticsCache.value.has(stopId)) {
+const stopAnalyticsCacheKey = (stopId: number, offset: number) =>
+    `${stopId}:${offset}`;
+
+const fetchStopAnalytics = async (stopId: number, offset = 0) => {
+    const cacheKey = stopAnalyticsCacheKey(stopId, offset);
+    if (stopAnalyticsCache.value.has(cacheKey)) {
+        stopAnalyticsState.value = "idle";
         return;
     }
     stopAnalyticsState.value = "loading";
     stopAnalyticsError.value = null;
     try {
-        const response = await fetch(`/api/analytics/stop/${stopId}`);
+        const response = await fetch(
+            `/api/analytics/stop/${stopId}?offset=${offset}`,
+        );
         if (!response.ok) {
             throw new Error(`Analytics error: ${response.status}`);
         }
         const data = (await response.json()) as StopAnalytics;
-        stopAnalyticsCache.value.set(stopId, data);
+        stopAnalyticsCache.value.set(cacheKey, data);
         stopAnalyticsState.value = "idle";
     } catch (error) {
         stopAnalyticsState.value = "error";
         stopAnalyticsError.value =
             error instanceof Error ? error.message : "Failed to load analytics";
     }
+};
+
+const changeStopAnalyticsOffset = (offset: number) => {
+    const stopId = selectedStop.value?.stop_id;
+    if (stopId == null) return;
+    const nextOffset = Math.min(22, Math.max(0, Math.floor(offset)));
+    stopAnalyticsOffset.value = nextOffset;
+    fetchStopAnalytics(stopId, nextOffset);
 };
 
 const fetchLiveStopArrivals = async (stopId: number) => {
@@ -959,7 +980,9 @@ const isStopAllActive = (stopId: number) => {
 };
 
 const getStopAnalytics = (stopId: number) =>
-    stopAnalyticsCache.value.get(stopId) ?? null;
+    stopAnalyticsCache.value.get(
+        stopAnalyticsCacheKey(stopId, stopAnalyticsOffset.value),
+    ) ?? null;
 
 const getLiveStopArrivals = (stopId: number) =>
     liveStopArrivalsCache.value.get(stopId) ?? null;
@@ -1498,7 +1521,8 @@ watch(
 watch(selectedStop, () => {
     updateSelectedStopHighlight();
     if (selectedStop.value) {
-        fetchStopAnalytics(selectedStop.value.stop_id);
+        stopAnalyticsOffset.value = 0;
+        fetchStopAnalytics(selectedStop.value.stop_id, 0);
         fetchLiveStopArrivals(selectedStop.value.stop_id);
     }
     if (selectedStop.value && isMobile.value) {
@@ -2095,6 +2119,7 @@ onBeforeUnmount(() => {
                             :analytics="getStopAnalytics(selectedStop.stop_id)"
                             :analytics-state="stopAnalyticsState"
                             :analytics-error="stopAnalyticsError"
+                            :on-change-analytics-offset="changeStopAnalyticsOffset"
                             :live-arrivals="
                                 getLiveStopArrivals(selectedStop.stop_id)
                             "
@@ -2151,6 +2176,7 @@ onBeforeUnmount(() => {
                         :analytics="getStopAnalytics(selectedStop.stop_id)"
                         :analytics-state="stopAnalyticsState"
                         :analytics-error="stopAnalyticsError"
+                        :on-change-analytics-offset="changeStopAnalyticsOffset"
                         :live-arrivals="getLiveStopArrivals(selectedStop.stop_id)"
                         :live-arrivals-state="liveStopArrivalsState"
                         :live-arrivals-error="liveStopArrivalsError"

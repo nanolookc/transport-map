@@ -2141,7 +2141,7 @@ const app = new Elysia()
     const stats = await getRouteStartStats(routeId);
     return Response.json({ routeId, stats });
   })
-  .get("/api/analytics/stop/:stopId", async ({ params }) => {
+  .get("/api/analytics/stop/:stopId", async ({ params, query }) => {
     const stopId = Number(params.stopId);
     if (Number.isNaN(stopId)) {
       return new Response("Invalid stop id", { status: 400 });
@@ -2154,15 +2154,21 @@ const app = new Elysia()
     if (stop.length === 0) {
       return new Response("Stop not found", { status: 404 });
     }
+    const requestedOffset = Number(query.offset ?? 0);
+    const offset = Number.isFinite(requestedOffset)
+      ? Math.min(22, Math.max(0, Math.floor(requestedOffset)))
+      : 0;
+    const windowSize = 8;
     const today = new Date();
     const dayKeys: Array<{ key: string; isToday: boolean }> = [];
-    for (let i = 6; i >= 0; i -= 1) {
+    for (let i = offset + windowSize - 1; i >= offset; i -= 1) {
       const date = new Date(today);
       date.setDate(today.getDate() - i);
       dayKeys.push({ key: localDateKey(date), isToday: i === 0 });
     }
     const cutoff = new Date(today);
-    cutoff.setDate(today.getDate() - 6);
+    cutoff.setDate(today.getDate() - (offset + windowSize - 1));
+    cutoff.setHours(0, 0, 0, 0);
 
     const visits = await db
       .select({
@@ -2299,6 +2305,11 @@ const app = new Elysia()
           ),
         ),
       days,
+      window: {
+        offset,
+        canGoOlder: offset < 22,
+        canGoNewer: offset > 0,
+      },
     });
   });
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
+import { ChevronLeft, ChevronRight } from "lucide-vue-next";
 import {
     Tooltip,
     TooltipContent,
@@ -34,6 +35,11 @@ type StopAnalytics = {
             predicted: boolean;
         }>;
     }>;
+    window: {
+        offset: number;
+        canGoOlder: boolean;
+        canGoNewer: boolean;
+    };
 };
 
 type LiveStopArrivals = {
@@ -86,6 +92,7 @@ const props = defineProps<{
     analytics: StopAnalytics | null;
     analyticsState: "idle" | "loading" | "error";
     analyticsError: string | null;
+    onChangeAnalyticsOffset: (offset: number) => void;
     liveArrivals: LiveStopArrivals | null;
     liveArrivalsState: "idle" | "loading" | "error";
     liveArrivalsError: string | null;
@@ -507,8 +514,32 @@ const formatFetchedAt = (value: string | null) => {
             </div>
         </div>
 
-        <div class="mt-4">
+        <div class="mt-4 flex items-center justify-between">
             <div class="text-xs font-semibold text-foreground/70">Timeline</div>
+            <div class="flex items-center gap-1" aria-label="Timeline date range">
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    class="size-7"
+                    :disabled="analyticsState === 'loading' || !analytics?.window.canGoOlder"
+                    aria-label="Show one day earlier"
+                    title="One day earlier"
+                    @click="onChangeAnalyticsOffset((analytics?.window.offset ?? 0) + 1)"
+                >
+                    <ChevronLeft class="size-4" />
+                </Button>
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    class="size-7"
+                    :disabled="analyticsState === 'loading' || !analytics?.window.canGoNewer"
+                    aria-label="Show one day later"
+                    title="One day later"
+                    @click="onChangeAnalyticsOffset((analytics?.window.offset ?? 0) - 1)"
+                >
+                    <ChevronRight class="size-4" />
+                </Button>
+            </div>
         </div>
 
         <div class="mt-3 rounded-lg border border-border bg-foreground/[0.02] p-3">
@@ -529,7 +560,7 @@ const formatFetchedAt = (value: string | null) => {
                     v-if="!analytics || graphDays.length === 0"
                     class="text-[11px] text-muted-foreground"
                 >
-                    No history for the last 7 days.
+                    No history for these 8 days.
                 </div>
                 <div v-else>
                     <div
