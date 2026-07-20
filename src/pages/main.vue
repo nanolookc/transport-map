@@ -2,7 +2,18 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import { Bug, Star, X, Layers, Sun, Moon, Search, RotateCcw } from "lucide-vue-next";
+import {
+    Bug,
+    Star,
+    X,
+    Layers,
+    Sun,
+    Moon,
+    Search,
+    RotateCcw,
+    LocateFixed,
+    LoaderCircle,
+} from "lucide-vue-next";
 import { Input } from "@/components/ui/input";
 import {
     Dialog,
@@ -146,6 +157,7 @@ type LiveStopArrivals = {
 
 type LeafletMap = {
     setView: (coords: [number, number], zoom: number) => void;
+    flyTo: (coords: [number, number], zoom: number) => void;
     fitBounds: (
         bounds: unknown,
         options?: { padding?: [number, number] },
@@ -193,6 +205,8 @@ const statsInfoOpen = ref(false);
 const statsInfoRef = ref<HTMLElement | null>(null);
 const loadState = ref<"idle" | "loading" | "error">("idle");
 const errorMessage = ref<string | null>(null);
+const locationState = ref<"idle" | "loading" | "success" | "error">("idle");
+const locationMessage = ref<string | null>(null);
 const lastFetch = ref<Date | null>(null);
 const routes = ref<Route[]>([]);
 const routesLoadState = ref<"idle" | "loading" | "error">("idle");
@@ -230,6 +244,7 @@ let tileLayer: any = null;
 let refreshTimer: number | null = null;
 let liveStopTimer: number | null = null;
 let tickTimer: number | null = null;
+let locationMessageTimer: number | null = null;
 let didFitBounds = false;
 const markersById = new Map<number, LeafletMarker>();
 const vehiclesById = new Map<number, Vehicle>();
@@ -239,6 +254,8 @@ const stopMarkersById = new Map<number, LeafletCircleMarker>();
 const routeLayers: LeafletLayer[] = [];
 const stopLayers: LeafletLayer[] = [];
 let lastSelectedStopId: number | null = null;
+let userLocationMarker: LeafletLayer | null = null;
+let userLocationAccuracy: LeafletLayer | null = null;
 
 const apiUrl = "/api/proxy/vehicles";
 const routesUrl = "/api/proxy/routes";
@@ -348,6 +365,76 @@ const toggleTheme = () => {
 
 const checkMobile = () => {
     isMobile.value = window.innerWidth < 768;
+};
+
+const showLocationMessage = (message: string) => {
+    locationMessage.value = message;
+    if (locationMessageTimer) {
+        window.clearTimeout(locationMessageTimer);
+    }
+    locationMessageTimer = window.setTimeout(() => {
+        locationMessage.value = null;
+        locationMessageTimer = null;
+    }, 4000);
+};
+
+const focusUserLocation = () => {
+    if (!map || locationState.value === "loading") return;
+    if (!("geolocation" in navigator)) {
+        locationState.value = "error";
+        showLocationMessage("Location is not supported by this browser");
+        return;
+    }
+
+    locationState.value = "loading";
+    locationMessage.value = null;
+    navigator.geolocation.getCurrentPosition(
+        (position) => {
+            if (!map) return;
+            const L = window.L;
+            const coords: [number, number] = [
+                position.coords.latitude,
+                position.coords.longitude,
+            ];
+
+            if (userLocationMarker) map.removeLayer(userLocationMarker);
+            if (userLocationAccuracy) map.removeLayer(userLocationAccuracy);
+
+            userLocationAccuracy = L.circle(coords, {
+                radius: position.coords.accuracy,
+                color: "#2563eb",
+                weight: 1,
+                opacity: 0.35,
+                fillColor: "#3b82f6",
+                fillOpacity: 0.08,
+                pane: "userLocation",
+            }).addTo(map);
+            userLocationMarker = L.circleMarker(coords, {
+                radius: 7,
+                color: "#ffffff",
+                weight: 3,
+                fillColor: "#2563eb",
+                fillOpacity: 1,
+                pane: "userLocation",
+            }).addTo(map);
+
+            map.flyTo(coords, 16);
+            locationState.value = "success";
+        },
+        (error) => {
+            locationState.value = "error";
+            const message =
+                error.code === error.PERMISSION_DENIED
+                    ? "Allow location access to find yourself on the map"
+                    : "Could not determine your location";
+            showLocationMessage(message);
+        },
+        {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 30000,
+        },
+    );
 };
 
 const loadLeaflet = () =>
@@ -1434,6 +1521,7 @@ const initMap = async () => {
     });
     mapInstance.createPane("routes").style.zIndex = "400";
     mapInstance.createPane("stops").style.zIndex = "550";
+    mapInstance.createPane("userLocation").style.zIndex = "650";
     map = mapInstance;
 
     tileLayer = L.tileLayer(isDark.value ? DARK_TILES : LIGHT_TILES, {
@@ -1621,6 +1709,9 @@ onBeforeUnmount(() => {
     }
     if (tickTimer) {
         window.clearInterval(tickTimer);
+    }
+    if (locationMessageTimer) {
+        window.clearTimeout(locationMessageTimer);
     }
     map?.remove();
 });
@@ -1975,6 +2066,37 @@ onBeforeUnmount(() => {
                 </Dialog>
             </div>
             <div ref="mapEl" class="absolute inset-0 z-0"></div>
+
+            <div class="absolute top-16 right-3 z-1000 flex items-start gap-2">
+                <div
+                    v-if="locationMessage"
+                    role="status"
+                    class="max-w-56 rounded-lg border border-border/70 px-3 py-2 text-right text-xs text-foreground glass-strong glow-accent-sm"
+                >
+                    {{ locationMessage }}
+                </div>
+                <button
+                    type="button"
+                    class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border/70 transition glass glow-accent-sm hover:text-foreground disabled:cursor-wait"
+                    :class="
+                        locationState === 'success'
+                            ? 'text-blue-600 dark:text-blue-400'
+                            : locationState === 'error'
+                              ? 'text-destructive'
+                              : 'text-muted-foreground'
+                    "
+                    :disabled="locationState === 'loading'"
+                    aria-label="Show my location"
+                    title="My location"
+                    @click="focusUserLocation"
+                >
+                    <LoaderCircle
+                        v-if="locationState === 'loading'"
+                        class="w-4 h-4 animate-spin"
+                    />
+                    <LocateFixed v-else class="w-4 h-4" />
+                </button>
+            </div>
 
             <div
                 v-if="selectedVehicle"
