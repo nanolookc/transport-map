@@ -112,8 +112,19 @@ const MAX_TIMELINE_ZOOM = 6;
 let resizeObserver: ResizeObserver | null = null;
 
 type TimelinePointer = { clientY: number };
+type TimelinePoint = {
+    key: string;
+    dayIndex: number;
+    dayLabel: string;
+    minutes: number;
+    timestamp: string;
+    routeId: number;
+    predicted: boolean;
+    color: string;
+};
 
 const timelinePointers = new Map<number, TimelinePointer>();
+const selectedTimelinePoint = ref<TimelinePoint | null>(null);
 let pinchState: {
     distance: number;
     zoom: number;
@@ -181,6 +192,7 @@ const scrollToNow = () => {
 watch(
     () => props.stop.stop_id,
     () => {
+        selectedTimelinePoint.value = null;
         requestAnimationFrame(scrollToNow);
     },
 );
@@ -189,6 +201,7 @@ watch(
     () => props.analytics,
     (value) => {
         if (!value) return;
+        selectedTimelinePoint.value = null;
         requestAnimationFrame(scrollToNow);
     },
 );
@@ -216,15 +229,7 @@ const routeColorMap = computed(() => {
 });
 
 const graphPoints = computed(() => {
-    const points: Array<{
-        key: string;
-        dayIndex: number;
-        minutes: number;
-        timestamp: string;
-        routeId: number;
-        predicted: boolean;
-        color: string;
-    }> = [];
+    const points: TimelinePoint[] = [];
     graphDays.value.forEach((day, dayIndex) => {
         day.points.forEach((group) => {
             if (!graphSelectedSet.value.has(group.routeId)) return;
@@ -235,6 +240,7 @@ const graphPoints = computed(() => {
                 points.push({
                     key: `${day.date}-${group.routeId}-${timestamp}-${index}`,
                     dayIndex,
+                    dayLabel: day.isToday ? "Today" : day.date,
                     minutes,
                     timestamp,
                     routeId: group.routeId,
@@ -753,6 +759,8 @@ const formatFetchedAt = (value: string | null) => {
                                                     top: pointStyle(point).top,
                                                 }"
                                                 :aria-label="formatPointLabel({ timestamp: point.timestamp, predicted: point.predicted })"
+                                                @click.stop="selectedTimelinePoint = point"
+                                                @focus="selectedTimelinePoint = point"
                                             >
                                                 <span
                                                     class="size-3 rounded-full border shadow-sm"
@@ -778,6 +786,33 @@ const formatFetchedAt = (value: string | null) => {
                                 </div>
                             </TooltipProvider>
                         </div>
+                    </div>
+                    <div
+                        v-if="selectedTimelinePoint"
+                        class="mt-2 flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-[11px] text-foreground"
+                        role="status"
+                    >
+                        <span
+                            class="size-2.5 shrink-0 rounded-full border"
+                            :class="selectedTimelinePoint.predicted ? 'bg-transparent opacity-50' : ''"
+                            :style="{
+                                backgroundColor: selectedTimelinePoint.predicted ? 'transparent' : selectedTimelinePoint.color,
+                                borderColor: selectedTimelinePoint.color,
+                            }"
+                        />
+                        <span class="min-w-0 flex-1">
+                            Route {{ getRouteShortName(selectedTimelinePoint.routeId) }}
+                            · {{ selectedTimelinePoint.dayLabel }}
+                            · {{ formatPointLabel(selectedTimelinePoint) }}
+                        </span>
+                        <button
+                            type="button"
+                            class="text-muted-foreground"
+                            aria-label="Close selected timeline event"
+                            @click="selectedTimelinePoint = null"
+                        >
+                            ×
+                        </button>
                     </div>
                 </div>
                 <div

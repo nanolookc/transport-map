@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title>Transport Map</title>
+  <rect width="512" height="512" rx="112" fill="#0f172a"/>
+  <path d="M140 142c0-31 25-56 56-56h120c31 0 56 25 56 56v190c0 24-15 45-37 53l27 41H150l27-41c-22-8-37-29-37-53V142Z" fill="#f8fafc"/>
+  <rect x="177" y="127" width="158" height="105" rx="22" fill="#38bdf8"/>
+  <path d="M195 151h122v57H195z" fill="#0f172a" opacity=".9"/>
+  <path d="M209 151v57M256 151v57M303 151v57" stroke="#38bdf8" stroke-width="12"/>
+  <rect x="178" y="263" width="156" height="51" rx="14" fill="#cbd5e1"/>
+  <circle cx="203" cy="352" r="25" fill="#0f172a"/>
+  <circle cx="309" cy="352" r="25" fill="#0f172a"/>
+  <circle cx="203" cy="352" r="10" fill="#f8fafc"/>
+  <circle cx="309" cy="352" r="10" fill="#f8fafc"/>
+  <path d="M79 256h44M389 256h44" stroke="#f97316" stroke-width="24" stroke-linecap="round"/>
+</svg>
