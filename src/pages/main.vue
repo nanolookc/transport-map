@@ -614,7 +614,9 @@ const getStopMarkerStyle = (stopId: number, isSelected: boolean) => {
     const dimStop = isStopDimmed(stopId);
     const dark = isDark.value;
     return {
-        radius: isSelected ? 7 : 5,
+        // Stops are primarily selected directly on the map. Keep their visual
+        // target comfortably tappable on touch screens as well as desktop.
+        radius: isSelected ? 10 : 8,
         color: isSelected ? (dark ? "#ffffff" : "#111111") : dark ? "rgba(255,255,255,0.3)" : "#0f172a",
         weight: isSelected ? 2.5 : dimStop ? (dark ? 0.8 : 1) : (dark ? 1.2 : 1.5),
         fillColor: isSelected ? (dark ? "#ffffff" : "#111111") : dark ? "rgba(255,255,255,0.7)" : "#ffffff",

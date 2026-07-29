@@ -105,7 +105,35 @@ const safeColor = (hex: string) =>
 const chartEl = ref<HTMLDivElement | null>(null);
 const chartScrollEl = ref<HTMLDivElement | null>(null);
 const chartHeight = ref(640);
+const timelineZoom = ref(1);
+const TIMELINE_BASE_HEIGHT = 1536;
+const MIN_TIMELINE_ZOOM = 1;
+const MAX_TIMELINE_ZOOM = 6;
 let resizeObserver: ResizeObserver | null = null;
+
+type TimelinePointer = { clientY: number };
+
+const timelinePointers = new Map<number, TimelinePointer>();
+let pinchState: {
+    distance: number;
+    zoom: number;
+    anchorMinutes: number;
+} | null = null;
+
+const clamp = (value: number, min: number, max: number) =>
+    Math.min(Math.max(value, min), max);
+
+const getPinchPointers = () => {
+    const pointers = [...timelinePointers.values()];
+    if (pointers.length < 2 || !pointers[0] || !pointers[1]) return null;
+    return [pointers[0], pointers[1]] as const;
+};
+
+const getPinchDistance = (pointers: readonly [TimelinePointer, TimelinePointer]) =>
+    Math.abs(pointers[0].clientY - pointers[1].clientY);
+
+const getPinchCenterY = (pointers: readonly [TimelinePointer, TimelinePointer]) =>
+    (pointers[0].clientY + pointers[1].clientY) / 2;
 
 const connectResizeObserver = (el: HTMLDivElement | null) => {
     resizeObserver?.disconnect();
@@ -254,6 +282,81 @@ const displayRange = computed(() => {
     const span = Math.max(1, max - min);
     return { min, max, span };
 });
+
+const chartStyle = computed(() => ({
+    height: `${TIMELINE_BASE_HEIGHT * timelineZoom.value}px`,
+}));
+
+const getTimelineMinutesAt = (clientY: number) => {
+    const chart = chartEl.value;
+    if (!chart) return null;
+    const rect = chart.getBoundingClientRect();
+    if (rect.height === 0) return null;
+    const ratio = clamp((clientY - rect.top) / rect.height, 0, 1);
+    const range = displayRange.value;
+    return range.min + ratio * range.span;
+};
+
+const beginPinch = () => {
+    const pointers = getPinchPointers();
+    if (!pointers) return;
+    const anchorMinutes = getTimelineMinutesAt(getPinchCenterY(pointers));
+    if (anchorMinutes === null) return;
+    pinchState = {
+        distance: Math.max(getPinchDistance(pointers), 1),
+        zoom: timelineZoom.value,
+        anchorMinutes,
+    };
+};
+
+const updatePinch = () => {
+    if (!pinchState) return;
+    const pointers = getPinchPointers();
+    if (!pointers) return;
+    const distance = Math.max(getPinchDistance(pointers), 1);
+    timelineZoom.value = clamp(
+        pinchState.zoom * (distance / pinchState.distance),
+        MIN_TIMELINE_ZOOM,
+        MAX_TIMELINE_ZOOM,
+    );
+
+    const scroll = chartScrollEl.value;
+    if (!scroll) return;
+    const centerY = getPinchCenterY(pointers);
+    const range = displayRange.value;
+    const anchorRatio = (pinchState.anchorMinutes - range.min) / range.span;
+    requestAnimationFrame(() => {
+        const viewportY = centerY - scroll.getBoundingClientRect().top;
+        const anchorY = anchorRatio * TIMELINE_BASE_HEIGHT * timelineZoom.value;
+        scroll.scrollTop = clamp(
+            anchorY - viewportY,
+            0,
+            scroll.scrollHeight - scroll.clientHeight,
+        );
+    });
+};
+
+const onTimelinePointerDown = (event: PointerEvent) => {
+    if (event.pointerType === "mouse") return;
+    if (event.currentTarget instanceof HTMLElement) {
+        event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    timelinePointers.set(event.pointerId, { clientY: event.clientY });
+    if (timelinePointers.size === 2) beginPinch();
+};
+
+const onTimelinePointerMove = (event: PointerEvent) => {
+    if (!timelinePointers.has(event.pointerId)) return;
+    timelinePointers.set(event.pointerId, { clientY: event.clientY });
+    if (!pinchState) return;
+    if (event.cancelable) event.preventDefault();
+    updatePinch();
+};
+
+const onTimelinePointerEnd = (event: PointerEvent) => {
+    timelinePointers.delete(event.pointerId);
+    if (timelinePointers.size < 2) pinchState = null;
+};
 
 const labelStepMinutes = computed(() => {
     const height = chartHeight.value;
@@ -577,8 +680,13 @@ const formatFetchedAt = (value: string | null) => {
                     <div
                         ref="chartScrollEl"
                         class="mt-2 h-96 overflow-y-auto pr-1 themed-scroll"
+                        style="touch-action: pan-y"
+                        @pointerdown="onTimelinePointerDown"
+                        @pointermove="onTimelinePointerMove"
+                        @pointerup="onTimelinePointerEnd"
+                        @pointercancel="onTimelinePointerEnd"
                     >
-                        <div ref="chartEl" class="relative h-384">
+                        <div ref="chartEl" class="relative" :style="chartStyle">
                             <div class="absolute inset-y-0 left-0 w-8">
                                 <span
                                     v-for="label in timeLabels"
@@ -637,15 +745,28 @@ const formatFetchedAt = (value: string | null) => {
                                         :key="point.key"
                                     >
                                         <TooltipTrigger as-child>
-                                            <div
-                                                class="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border shadow-sm"
-                                                :class="
-                                                    point.predicted
-                                                        ? 'bg-transparent opacity-50'
-                                                        : ''
-                                                "
-                                                :style="pointStyle(point)"
-                                            />
+                                            <button
+                                                type="button"
+                                                class="absolute flex size-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-primary/80"
+                                                :style="{
+                                                    left: pointStyle(point).left,
+                                                    top: pointStyle(point).top,
+                                                }"
+                                                :aria-label="formatPointLabel({ timestamp: point.timestamp, predicted: point.predicted })"
+                                            >
+                                                <span
+                                                    class="size-3 rounded-full border shadow-sm"
+                                                    :class="
+                                                        point.predicted
+                                                            ? 'bg-transparent opacity-50'
+                                                            : ''
+                                                    "
+                                                    :style="{
+                                                        backgroundColor: point.predicted ? 'transparent' : point.color,
+                                                        borderColor: point.color,
+                                                    }"
+                                                />
+                                            </button>
                                         </TooltipTrigger>
                                         <TooltipContent
                                             side="top"
