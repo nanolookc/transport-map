@@ -110,6 +110,7 @@ const TIMELINE_BASE_HEIGHT = 1536;
 const MIN_TIMELINE_ZOOM = 1;
 const MAX_TIMELINE_ZOOM = 6;
 let resizeObserver: ResizeObserver | null = null;
+let analyticsStopIdForAutoScroll: number | null = null;
 
 type TimelinePointer = { clientY: number };
 type TimelinePoint = {
@@ -125,6 +126,7 @@ type TimelinePoint = {
 
 const timelinePointers = new Map<number, TimelinePointer>();
 const selectedTimelinePoint = ref<TimelinePoint | null>(null);
+const displayedAnalytics = ref<StopAnalytics | null>(null);
 let pinchState: {
     distance: number;
     zoom: number;
@@ -193,7 +195,8 @@ watch(
     () => props.stop.stop_id,
     () => {
         selectedTimelinePoint.value = null;
-        requestAnimationFrame(scrollToNow);
+        displayedAnalytics.value = null;
+        analyticsStopIdForAutoScroll = null;
     },
 );
 
@@ -201,12 +204,16 @@ watch(
     () => props.analytics,
     (value) => {
         if (!value) return;
+        displayedAnalytics.value = value;
+        if (analyticsStopIdForAutoScroll === props.stop.stop_id) return;
+        analyticsStopIdForAutoScroll = props.stop.stop_id;
         selectedTimelinePoint.value = null;
         requestAnimationFrame(scrollToNow);
     },
 );
 
-const graphRoutes = computed(() => props.analytics?.routes ?? []);
+const activeAnalytics = computed(() => props.analytics ?? displayedAnalytics.value);
+const graphRoutes = computed(() => activeAnalytics.value?.routes ?? []);
 const graphSelectedSet = computed(() => {
     if (props.showAllRoutes) {
         return new Set(props.stopRouteIds);
@@ -216,7 +223,7 @@ const graphSelectedSet = computed(() => {
     );
 });
 
-const graphDays = computed(() => props.analytics?.days ?? []);
+const graphDays = computed(() => activeAnalytics.value?.days ?? []);
 const dayCount = computed(() => Math.max(graphDays.value.length, 1));
 const routeColorMap = computed(() => {
     const map = new Map<number, string>();
@@ -630,10 +637,10 @@ const formatFetchedAt = (value: string | null) => {
                     variant="ghost"
                     size="icon"
                     class="size-7"
-                    :disabled="analyticsState === 'loading' || !analytics?.window.canGoOlder"
+                    :disabled="analyticsState === 'loading' || !activeAnalytics?.window.canGoOlder"
                     aria-label="Show one day earlier"
                     title="One day earlier"
-                    @click="onChangeAnalyticsOffset((analytics?.window.offset ?? 0) + 1)"
+                    @click="onChangeAnalyticsOffset((activeAnalytics?.window.offset ?? 0) + 1)"
                 >
                     <ChevronLeft class="size-4" />
                 </Button>
@@ -641,10 +648,10 @@ const formatFetchedAt = (value: string | null) => {
                     variant="ghost"
                     size="icon"
                     class="size-7"
-                    :disabled="analyticsState === 'loading' || !analytics?.window.canGoNewer"
+                    :disabled="analyticsState === 'loading' || !activeAnalytics?.window.canGoNewer"
                     aria-label="Show one day later"
                     title="One day later"
-                    @click="onChangeAnalyticsOffset((analytics?.window.offset ?? 0) - 1)"
+                    @click="onChangeAnalyticsOffset((activeAnalytics?.window.offset ?? 0) - 1)"
                 >
                     <ChevronRight class="size-4" />
                 </Button>
@@ -653,20 +660,20 @@ const formatFetchedAt = (value: string | null) => {
 
         <div class="mt-3 rounded-lg border border-border bg-foreground/[0.02] p-3">
             <div
-                v-if="analyticsState === 'loading'"
+                v-if="analyticsState === 'loading' && !activeAnalytics"
                 class="text-[11px] text-muted-foreground"
             >
                 Loading chart...
             </div>
             <div
-                v-else-if="analyticsState === 'error'"
+                v-else-if="analyticsState === 'error' && !activeAnalytics"
                 class="text-[11px] text-destructive"
             >
                 {{ analyticsError }}
             </div>
             <div v-else>
                 <div
-                    v-if="!analytics || graphDays.length === 0"
+                    v-if="!activeAnalytics || graphDays.length === 0"
                     class="text-[11px] text-muted-foreground"
                 >
                     No history for these 8 days.

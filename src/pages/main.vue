@@ -195,6 +195,7 @@ const debugOpen = ref(false);
 const showUnknownRoutes = ref(false);
 const mobileRoutesOpen = ref(false);
 const mobileStopOpen = ref(false);
+const mobileStopSnapPoint = ref<number | string>(0.7);
 const desktopStopOpen = ref(false);
 const isMobile = ref(false);
 const nowTick = ref(Date.now());
@@ -1616,10 +1617,15 @@ watch(selectedStop, () => {
         fetchLiveStopArrivals(selectedStop.value.stop_id);
     }
     if (selectedStop.value && isMobile.value) {
+        mobileStopSnapPoint.value = 0.7;
         mobileStopOpen.value = true;
     } else if (selectedStop.value && !isMobile.value) {
         desktopStopOpen.value = true;
     }
+});
+
+watch(mobileStopOpen, (open) => {
+    if (open) mobileStopSnapPoint.value = 0.7;
 });
 
 watch(selectedVehicle, () => {
@@ -2191,8 +2197,20 @@ onBeforeUnmount(() => {
                 </div>
             </div>
 
-            <Drawer v-model:open="mobileStopOpen">
-                <DrawerContent v-if="selectedStop" class="h-[70vh] glass-strong">
+            <Drawer
+                v-model:open="mobileStopOpen"
+                v-model:active-snap-point="mobileStopSnapPoint"
+                :snap-points="[0.7, 1]"
+            >
+                <DrawerContent
+                    v-if="selectedStop"
+                    class="!mt-0 !h-[100dvh] !max-h-[100dvh] glass-strong"
+                    :class="
+                        mobileStopSnapPoint === 1
+                            ? '!rounded-none'
+                            : '!rounded-t-lg'
+                    "
+                >
                     <DrawerHeader class="pb-4 border-b border-border">
                         <div class="flex justify-between items-center">
                             <DrawerTitle class="text-foreground">Stop Details</DrawerTitle>
