@@ -7,7 +7,7 @@ const databaseUrl =
 
 const poolMax = Number(process.env.DATABASE_POOL_MAX ?? 10);
 const connectionMaxLifetimeSeconds = Number(
-  process.env.DATABASE_MAX_LIFETIME_SECONDS ?? 3600,
+  process.env.DATABASE_MAX_LIFETIME_SECONDS ?? 0,
 );
 
 export const sqlClient = new SQL({
@@ -15,8 +15,8 @@ export const sqlClient = new SQL({
   max: Number.isFinite(poolMax) && poolMax > 0 ? poolMax : 10,
   maxLifetime:
     Number.isFinite(connectionMaxLifetimeSeconds) &&
-    connectionMaxLifetimeSeconds > 0
+    connectionMaxLifetimeSeconds >= 0
       ? connectionMaxLifetimeSeconds
-      : 3600,
+      : 0,
 });
 export const db = drizzle({ client: sqlClient });

@@ -309,6 +309,7 @@ const fetchJson = async <T>(path: string) => {
 };
 
 const chunkedInsert = async <T>(
+  client: Pick<typeof db, "insert">,
   table: AnyPgTable,
   rows: T[],
   chunkSize = 1000,
@@ -316,13 +317,16 @@ const chunkedInsert = async <T>(
   for (let i = 0; i < rows.length; i += chunkSize) {
     const batch = rows.slice(i, i + chunkSize);
     if (batch.length === 0) continue;
-    await db.insert(table).values(batch as never);
+    await client.insert(table).values(batch as never);
   }
 };
 
-const upsertRoutes = async (data: Route[]) => {
+const upsertRoutes = async (
+  client: Pick<typeof db, "insert">,
+  data: Route[],
+) => {
   if (data.length === 0) return;
-  await db
+  await client
     .insert(routes)
     .values(
       data.map((route) => ({
@@ -360,60 +364,65 @@ const refreshStaticData = async () => {
       fetchJson<ShapePoint[]>("shapes"),
     ]);
 
-  await db.delete(trips);
-  await db.delete(stops);
-  await db.delete(stopTimes);
-  await db.delete(shapes);
+  await db.transaction(async (tx) => {
+    await tx.delete(trips);
+    await tx.delete(stops);
+    await tx.delete(stopTimes);
+    await tx.delete(shapes);
 
-  await upsertRoutes(routesData);
-  await chunkedInsert(
-    trips,
-    tripsData.map((trip) => ({
-      tripId: trip.trip_id,
-      routeId: trip.route_id,
-      tripHeadsign: trip.trip_headsign,
-      directionId: trip.direction_id,
-      blockId: trip.block_id,
-      shapeId: trip.shape_id,
-    })),
-  );
-  await chunkedInsert(
-    stops,
-    stopsData.map((stop) => ({
-      stopId: stop.stop_id,
-      stopName: stop.stop_name,
-      stopLat: stop.stop_lat,
-      stopLon: stop.stop_lon,
-      locationType: stop.location_type,
-      stopCode: stop.stop_code ?? "",
-    })),
-  );
-  await loadStopsCache();
-  await chunkedInsert(
-    stopTimes,
-    stopTimesData.map((stopTime) => ({
-      tripId: stopTime.trip_id,
-      stopId: stopTime.stop_id,
-      stopSequence: stopTime.stop_sequence,
-      arrivalTime: stopTime.arrival_time ?? null,
-      departureTime: stopTime.departure_time ?? null,
-      stopHeadsign: stopTime.stop_headsign ?? null,
-      pickupType: stopTime.pickup_type ?? null,
-      dropOffType: stopTime.drop_off_type ?? null,
-      shapeDistTraveled: stopTime.shape_dist_traveled ?? null,
-      timepoint: stopTime.timepoint ?? null,
-    })),
-  );
-  await chunkedInsert(
-    shapes,
-    shapesData.map((shape) => ({
-      shapeId: shape.shape_id,
-      shapePtSequence: shape.shape_pt_sequence,
-      shapePtLat: shape.shape_pt_lat,
-      shapePtLon: shape.shape_pt_lon,
-      shapeDistTraveled: shape.shape_dist_traveled ?? null,
-    })),
-  );
+    await upsertRoutes(tx, routesData);
+    await chunkedInsert(
+      tx,
+      trips,
+      tripsData.map((trip) => ({
+        tripId: trip.trip_id,
+        routeId: trip.route_id,
+        tripHeadsign: trip.trip_headsign,
+        directionId: trip.direction_id,
+        blockId: trip.block_id,
+        shapeId: trip.shape_id,
+      })),
+    );
+    await chunkedInsert(
+      tx,
+      stops,
+      stopsData.map((stop) => ({
+        stopId: stop.stop_id,
+        stopName: stop.stop_name,
+        stopLat: stop.stop_lat,
+        stopLon: stop.stop_lon,
+        locationType: stop.location_type,
+        stopCode: stop.stop_code ?? "",
+      })),
+    );
+    await chunkedInsert(
+      tx,
+      stopTimes,
+      stopTimesData.map((stopTime) => ({
+        tripId: stopTime.trip_id,
+        stopId: stopTime.stop_id,
+        stopSequence: stopTime.stop_sequence,
+        arrivalTime: stopTime.arrival_time ?? null,
+        departureTime: stopTime.departure_time ?? null,
+        stopHeadsign: stopTime.stop_headsign ?? null,
+        pickupType: stopTime.pickup_type ?? null,
+        dropOffType: stopTime.drop_off_type ?? null,
+        shapeDistTraveled: stopTime.shape_dist_traveled ?? null,
+        timepoint: stopTime.timepoint ?? null,
+      })),
+    );
+    await chunkedInsert(
+      tx,
+      shapes,
+      shapesData.map((shape) => ({
+        shapeId: shape.shape_id,
+        shapePtSequence: shape.shape_pt_sequence,
+        shapePtLat: shape.shape_pt_lat,
+        shapePtLon: shape.shape_pt_lon,
+        shapeDistTraveled: shape.shape_dist_traveled ?? null,
+      })),
+    );
+  });
   buildStaticCaches(routesData, tripsData, stopsData, stopTimesData, shapesData);
 };
 
@@ -579,6 +588,7 @@ const upsertRouteDailyStats = async (fetchedAt: Date, vehicles: Vehicle[]) => {
 const storeVehicleSnapshots = async (fetchedAt: Date, vehicles: Vehicle[]) => {
   if (vehicles.length === 0) return;
   await chunkedInsert(
+    db,
     vehicleSnapshots,
     vehicles.map((vehicle) => ({
       fetchedAt,
@@ -923,6 +933,7 @@ const upsertLiveVehicleStates = async (states: VehicleLiveState[]) => {
 const insertProgressSamples = async (states: VehicleLiveState[]) => {
   if (states.length === 0) return;
   await chunkedInsert(
+    db,
     vehicleProgressSamples,
     states.map((state) => ({
       vehicleId: state.vehicleId,
@@ -1316,7 +1327,7 @@ const recordStopVisits = async (fetchedAt: Date, vehicles: Vehicle[]) => {
   });
 
   if (events.length === 0) return;
-  await chunkedInsert(stopVisits, events);
+  await chunkedInsert(db, stopVisits, events);
   console.log(`Stop visits saved: ${events.length}`);
 };
 
