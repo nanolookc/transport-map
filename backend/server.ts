@@ -15,7 +15,7 @@ import {
   vehicleProgressSamples,
   vehicleSnapshots,
 } from "./db/schema";
-import { db, sqlClient } from "./db/client";
+import { db, sqlClient, writeDb, writeSqlClient } from "./db/client";
 
 type Vehicle = {
   id: number;
@@ -566,7 +566,7 @@ const upsertRouteDailyStats = async (fetchedAt: Date, vehicles: Vehicle[]) => {
   });
   if (byRoute.size === 0) return;
   const day = fetchedAt.toISOString().slice(0, 10);
-  await db
+  await writeDb
     .insert(routeDailyStats)
     .values(
       Array.from(byRoute.keys()).map((routeId) => ({
@@ -588,7 +588,7 @@ const upsertRouteDailyStats = async (fetchedAt: Date, vehicles: Vehicle[]) => {
 const storeVehicleSnapshots = async (fetchedAt: Date, vehicles: Vehicle[]) => {
   if (vehicles.length === 0) return;
   await chunkedInsert(
-    db,
+    writeDb,
     vehicleSnapshots,
     vehicles.map((vehicle) => ({
       fetchedAt,
@@ -878,7 +878,7 @@ const upsertLiveVehicleStates = async (states: VehicleLiveState[]) => {
   const updatedAt = new Date();
   for (let i = 0; i < states.length; i += 500) {
     const batch = states.slice(i, i + 500);
-    await db
+    await writeDb
       .insert(vehicleLiveStates)
       .values(
         batch.map((state) => ({
@@ -933,7 +933,7 @@ const upsertLiveVehicleStates = async (states: VehicleLiveState[]) => {
 const insertProgressSamples = async (states: VehicleLiveState[]) => {
   if (states.length === 0) return;
   await chunkedInsert(
-    db,
+    writeDb,
     vehicleProgressSamples,
     states.map((state) => ({
       vehicleId: state.vehicleId,
@@ -1327,7 +1327,7 @@ const recordStopVisits = async (fetchedAt: Date, vehicles: Vehicle[]) => {
   });
 
   if (events.length === 0) return;
-  await chunkedInsert(db, stopVisits, events);
+  await chunkedInsert(writeDb, stopVisits, events);
   console.log(`Stop visits saved: ${events.length}`);
 };
 
@@ -2356,6 +2356,6 @@ if (INGEST_ENABLED) {
 }
 
 process.on("SIGINT", async () => {
-  await sqlClient.close();
+  await Promise.all([sqlClient.close(), writeSqlClient.close()]);
   process.exit(0);
 });
