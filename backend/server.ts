@@ -198,6 +198,8 @@ const LIVE_HISTORY_LIMIT = 10;
 const LIVE_PROGRESS_RETENTION_HOURS = 6;
 const SEGMENT_STATS_MIN_SAMPLES = 5;
 const SEGMENT_STATS_REFRESH_MS = 30 * 60 * 1000;
+const PREDICTION_HISTORY_DAYS = 30;
+const PREDICTION_MIN_SAME_WEEKDAY_DAYS = 3;
 
 const headers = {
   "X-Agency-Id": TRANSIT_AGENCY_ID,
@@ -2179,47 +2181,131 @@ const app = new Elysia()
       date.setDate(today.getDate() - i);
       dayKeys.push({ key: localDateKey(date), isToday: i === 0 });
     }
-    const cutoff = new Date(today);
-    cutoff.setDate(today.getDate() - (offset + windowSize - 1));
-    cutoff.setHours(0, 0, 0, 0);
+    const historyCutoff = new Date(today);
+    historyCutoff.setDate(today.getDate() - PREDICTION_HISTORY_DAYS);
+    historyCutoff.setHours(0, 0, 0, 0);
+    const displayCutoff = new Date(today);
+    displayCutoff.setDate(today.getDate() - (offset + windowSize - 1));
+    displayCutoff.setHours(0, 0, 0, 0);
+    const todayStart = new Date(today);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayKey = localDateKey(today);
+    const targetDate = new Date(`${todayKey}T00:00:00`);
+    const targetWeekday = targetDate.getDay();
+    const targetIsoWeekday = targetWeekday === 0 ? 7 : targetWeekday;
+    const targetDayType = getDayType(targetDate);
 
-    const visits = await db
-      .select({
-        routeId: stopVisits.routeId,
-        observedAt: stopVisits.observedAt,
-      })
-      .from(stopVisits)
-      .where(
-        sql`${stopVisits.stopId} = ${stopId} AND ${stopVisits.observedAt} >= ${cutoff} AND ${stopVisits.routeId} IS NOT NULL`,
-      );
-
-    const routeInfoRows = await db
-      .select({
-        routeId: routes.routeId,
-        routeShortName: routes.routeShortName,
-        routeLongName: routes.routeLongName,
-        routeColor: routes.routeColor,
-      })
-      .from(routes);
+    const [displayVisits, predictionVisits, routeInfoRows] = await Promise.all([
+      db
+        .select({
+          routeId: stopVisits.routeId,
+          observedAt: stopVisits.observedAt,
+        })
+        .from(stopVisits)
+        .where(
+          sql`${stopVisits.stopId} = ${stopId} AND ${stopVisits.observedAt} >= ${displayCutoff} AND ${stopVisits.routeId} IS NOT NULL`,
+        ),
+      db.execute<{ routeId: number; observedAt: Date }>(sql`
+        with candidate_visits as (
+          select
+            route_id,
+            observed_at,
+            (observed_at at time zone 'Europe/Bucharest')::date as service_date
+          from stop_visits
+          where stop_id = ${stopId}
+            and observed_at >= ${historyCutoff}
+            and observed_at < ${todayStart}
+            and route_id is not null
+        ),
+        route_days as (
+          select distinct route_id, service_date
+          from candidate_visits
+        ),
+        same_day_counts as (
+          select route_id, count(*)::integer as available_days
+          from route_days
+          where extract(isodow from service_date) = ${targetIsoWeekday}
+          group by route_id
+        ),
+        same_day_candidates as (
+          select
+            route_id,
+            service_date,
+            dense_rank() over (
+              partition by route_id
+              order by service_date desc
+            ) as day_rank
+          from route_days
+          where extract(isodow from service_date) = ${targetIsoWeekday}
+        ),
+        fallback_day_candidates as (
+          select
+            route_days.route_id,
+            route_days.service_date,
+            dense_rank() over (
+              partition by route_days.route_id
+              order by route_days.service_date desc
+            ) as day_rank
+          from route_days
+          left join same_day_counts
+            on same_day_counts.route_id = route_days.route_id
+          where coalesce(same_day_counts.available_days, 0) < ${PREDICTION_MIN_SAME_WEEKDAY_DAYS}
+            and case
+              when extract(isodow from route_days.service_date) in (6, 7)
+                then 'weekend'
+              else 'weekday'
+            end = ${targetDayType}
+        ),
+        selected_days as (
+          select same_day_candidates.route_id, same_day_candidates.service_date
+          from same_day_candidates
+          join same_day_counts
+            on same_day_counts.route_id = same_day_candidates.route_id
+          where same_day_counts.available_days >= ${PREDICTION_MIN_SAME_WEEKDAY_DAYS}
+            and same_day_candidates.day_rank <= 4
+          union all
+          select route_id, service_date
+          from fallback_day_candidates
+          where day_rank <= 4
+        )
+        select
+          candidate_visits.route_id as "routeId",
+          candidate_visits.observed_at as "observedAt"
+        from candidate_visits
+        join selected_days
+          on selected_days.route_id = candidate_visits.route_id
+         and selected_days.service_date = candidate_visits.service_date
+      `),
+      db
+        .select({
+          routeId: routes.routeId,
+          routeShortName: routes.routeShortName,
+          routeLongName: routes.routeLongName,
+          routeColor: routes.routeColor,
+        })
+        .from(routes),
+    ]);
     const routeInfoMap = new Map(
       routeInfoRows.map((row) => [row.routeId, row]),
     );
 
-    const knownVisits = visits.filter((row) =>
+    const knownDisplayVisits = displayVisits.filter((row) =>
       routeInfoMap.has(row.routeId as number),
+    );
+    const knownPredictionVisits = predictionVisits.filter((row) =>
+      routeInfoMap.has(row.routeId),
     );
     const daySet = new Set(dayKeys.map((day) => day.key));
     const visitsByDay = new Map<
       string,
       Map<number, { timestamps: string[]; predicted: boolean }>
     >();
-    const historyByRoute = new Map<number, string[][]>();
 
-    knownVisits.forEach((row) => {
+    knownDisplayVisits.forEach((row) => {
       const dayKey = localDateKey(row.observedAt);
-      if (!daySet.has(dayKey)) return;
       const routeId = row.routeId as number;
       const timestamp = timeToIso(row.observedAt);
+      if (!daySet.has(dayKey)) return;
       if (!visitsByDay.has(dayKey)) {
         visitsByDay.set(dayKey, new Map());
       }
@@ -2230,25 +2316,28 @@ const app = new Elysia()
       dayMap?.get(routeId)?.timestamps.push(timestamp);
     });
 
-    dayKeys.forEach((day) => {
-      if (day.isToday) return;
-      const dayMap = visitsByDay.get(day.key);
-      if (!dayMap) return;
-      dayMap.forEach((value, routeId) => {
-        if (!historyByRoute.has(routeId)) {
-          historyByRoute.set(routeId, []);
-        }
-        historyByRoute
-          .get(routeId)
-          ?.push(value.timestamps.slice().sort((a, b) =>
-            new Date(a).getTime() - new Date(b).getTime()
-          ));
-      });
-    });
-
     const predictedByRoute = new Map<number, string[]>();
-    historyByRoute.forEach((values, routeId) => {
-      predictedByRoute.set(routeId, buildPredictedTimes(values));
+    const predictionDaysByRoute = new Map<number, Map<string, string[]>>();
+    knownPredictionVisits.forEach((row) => {
+      const dayKey = localDateKey(row.observedAt);
+      if (!predictionDaysByRoute.has(row.routeId)) {
+        predictionDaysByRoute.set(row.routeId, new Map());
+      }
+      const routeDayMap = predictionDaysByRoute.get(row.routeId);
+      if (!routeDayMap?.has(dayKey)) {
+        routeDayMap?.set(dayKey, []);
+      }
+      routeDayMap?.get(dayKey)?.push(timeToIso(row.observedAt));
+    });
+    predictionDaysByRoute.forEach((dayMap, routeId) => {
+      const predicted = buildPredictedTimes(
+        Array.from(dayMap.values()).map((timestamps) =>
+          timestamps.slice().sort((a, b) => new Date(a).getTime() - new Date(b).getTime()),
+        ),
+      );
+      if (predicted.length > 0) {
+        predictedByRoute.set(routeId, predicted);
+      }
     });
 
     const days = dayKeys.map((day) => {
@@ -2300,7 +2389,10 @@ const app = new Elysia()
     });
 
     const routeIds = Array.from(
-      new Set(knownVisits.map((row) => row.routeId as number)),
+      new Set([
+        ...knownDisplayVisits.map((row) => row.routeId as number),
+        ...knownPredictionVisits.map((row) => row.routeId),
+      ]),
     );
 
     return Response.json({
