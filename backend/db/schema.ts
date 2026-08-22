@@ -1,4 +1,5 @@
 import {
+    bigserial,
     date,
     doublePrecision,
     index,
@@ -212,7 +213,7 @@ export const vehicleProgressSamples = pgTable(
 export const stopSegmentTravelTimes = pgTable(
     "stop_segment_travel_times",
     {
-        id: serial("id").primaryKey(),
+        id: bigserial("id", { mode: "number" }).primaryKey(),
         routeId: integer("route_id").notNull(),
         directionId: integer("direction_id").notNull(),
         tripId: text("trip_id").notNull(),

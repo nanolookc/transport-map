@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "backend": "bun run dev:backend",
     "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun run backend/db/migrate.ts",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {

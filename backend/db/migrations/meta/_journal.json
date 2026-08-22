@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1787392200000,
+      "tag": "0000_widen_stop_segment_travel_times_id",
+      "breakpoints": true
+    }
+  ]
+}

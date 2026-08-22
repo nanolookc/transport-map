@@ -1553,8 +1553,9 @@ const refreshSegmentTravelStats = async () => {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - RETENTION_DAYS);
 
-  await db.delete(stopSegmentTravelTimes);
-  await db.execute(sql`
+  await db.transaction(async (tx) => {
+    await tx.delete(stopSegmentTravelTimes);
+    await tx.execute(sql`
     insert into stop_segment_travel_times (
       route_id,
       direction_id,
@@ -1622,10 +1623,10 @@ const refreshSegmentTravelStats = async () => {
       and next_observed_at is not null
       and next_stop_sequence = stop_sequence + 1
       and extract(epoch from (next_observed_at - observed_at)) between 15 and 3600
-  `);
+    `);
 
-  await db.delete(stopSegmentStats);
-  await db.execute(sql`
+    await tx.delete(stopSegmentStats);
+    await tx.execute(sql`
     insert into stop_segment_stats (
       route_id,
       direction_id,
@@ -1660,7 +1661,8 @@ const refreshSegmentTravelStats = async () => {
       day_type,
       hour_of_day
     having count(*) >= ${SEGMENT_STATS_MIN_SAMPLES}
-  `);
+    `);
+  });
 
   const count = await loadSegmentStatsCache();
   console.log(`Segment stats refreshed: ${count} buckets`);
