@@ -1,6 +1,7 @@
 import { Elysia } from "elysia";
 import { desc, sql } from "drizzle-orm";
 import type { AnyPgTable } from "drizzle-orm/pg-core";
+import { buildAlignedPredictionMinutes } from "./predictions";
 import {
   routeDailyStats,
   routes,
@@ -1462,29 +1463,13 @@ const getSegmentStatsKey = (
 
 const buildPredictedTimes = (dayValues: string[][]) => {
   if (dayValues.length === 0) return [];
-  // Convert ISO timestamps to minutes for percentile calculation
   const sortedDays = dayValues.map((values) =>
     values
       .map((ts) => timeToMinutes(new Date(ts)))
       .filter((v) => !Number.isNaN(v))
       .sort((a, b) => a - b),
   );
-  const maxCount = sortedDays.reduce(
-    (acc, values) => Math.max(acc, values.length),
-    0,
-  );
-  const predictedMinutes: number[] = [];
-  for (let i = 0; i < maxCount; i += 1) {
-    const samples = sortedDays
-      .filter((values) => values.length > i)
-      .map((values) => values[i]);
-    if (samples.length === 0) continue;
-    const p50 = percentile(samples, 0.5);
-    if (p50 !== null) {
-      predictedMinutes.push(p50);
-    }
-  }
-  // Convert back to ISO timestamps (use a reference date for the time)
+  const predictedMinutes = buildAlignedPredictionMinutes(sortedDays);
   const today = new Date();
   const predicted: string[] = [];
   predictedMinutes.forEach((minutes) => {
