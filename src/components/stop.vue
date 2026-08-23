@@ -265,6 +265,11 @@ const formatDayLabel = (value: string, isToday: boolean) => {
     return value.slice(5);
 };
 
+const isWeekend = (value: string) => {
+    const day = new Date(`${value}T00:00:00`).getDay();
+    return day === 0 || day === 6;
+};
+
 const formatMinutes = (value: number) => {
     const hours = Math.floor(value / 60);
     const minutes = Math.round(value % 60);
@@ -686,6 +691,12 @@ const formatFetchedAt = (value: string | null) => {
                             v-for="day in graphDays"
                             :key="day.date"
                             class="flex-1 text-center"
+                            :class="
+                                isWeekend(day.date)
+                                    ? 'font-semibold text-rose-500 dark:text-rose-400'
+                                    : ''
+                            "
+                            :title="isWeekend(day.date) ? 'Weekend' : undefined"
                         >
                             {{ formatDayLabel(day.date, day.isToday) }}
                         </span>
