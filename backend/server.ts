@@ -357,7 +357,20 @@ const upsertRoutes = async (
     });
 };
 
-const refreshStaticData = async () => {
+type StaticRefreshProgress = {
+  phase: string;
+};
+
+type StaticRefreshResult = {
+  routes: number;
+  trips: number;
+  stops: number;
+  stopTimes: number;
+  shapes: number;
+};
+
+const refreshStaticData = async (progress?: StaticRefreshProgress): Promise<StaticRefreshResult> => {
+  if (progress) progress.phase = "fetching upstream data";
   const [routesData, tripsData, stopsData, stopTimesData, shapesData] =
     await Promise.all([
       fetchJson<Route[]>("routes"),
@@ -367,6 +380,7 @@ const refreshStaticData = async () => {
       fetchJson<ShapePoint[]>("shapes"),
     ]);
 
+  if (progress) progress.phase = "replacing static data";
   await db.transaction(async (tx) => {
     await tx.delete(trips);
     await tx.delete(stops);
@@ -426,7 +440,15 @@ const refreshStaticData = async () => {
       })),
     );
   });
+  if (progress) progress.phase = "rebuilding caches";
   buildStaticCaches(routesData, tripsData, stopsData, stopTimesData, shapesData);
+  return {
+    routes: routesData.length,
+    trips: tripsData.length,
+    stops: stopsData.length,
+    stopTimes: stopTimesData.length,
+    shapes: shapesData.length,
+  };
 };
 
 const loadStopsCache = async () => {
@@ -1302,9 +1324,6 @@ const recordStopVisits = async (fetchedAt: Date, vehicles: Vehicle[]) => {
         );
         if (distance > STOP_EXIT_RADIUS_METERS) {
           stopInsideByVehicle.delete(key);
-          console.log(
-            `Vehicle ${vehicle.id} (route ${vehicle.route_id}) exited stop ${stop.stop_name}`,
-          );
           events.push({
             stopId: stop.stop_id,
             routeId: vehicle.route_id,
@@ -1323,15 +1342,11 @@ const recordStopVisits = async (fetchedAt: Date, vehicles: Vehicle[]) => {
       const distance = haversineMeters(lat, lon, stop.stop_lat, stop.stop_lon);
       if (distance > STOP_RADIUS_METERS) return;
       stopInsideByVehicle.add(key);
-      console.log(
-        `Vehicle ${vehicle.id} (route ${vehicle.route_id}) entered stop ${stop.stop_name}`,
-      );
     });
   });
 
   if (events.length === 0) return;
   await chunkedInsert(writeDb, stopVisits, events);
-  console.log(`Stop visits saved: ${events.length}`);
 };
 
 const pollVehicles = async () => {
@@ -1394,14 +1409,32 @@ const scheduleDailyCleanup = () => {
   run();
 };
 
+const runStaticRefresh = async (trigger: "startup" | "scheduled") => {
+  const startedAt = Date.now();
+  const progress: StaticRefreshProgress = { phase: "starting" };
+  try {
+    const result = await refreshStaticData(progress);
+    markDbSuccess();
+    console.info("Static refresh completed", {
+      trigger,
+      durationMs: Date.now() - startedAt,
+      ...result,
+    });
+  } catch (error) {
+    markDbError(error);
+    console.error("Static refresh failed", {
+      trigger,
+      phase: progress.phase,
+      durationMs: Date.now() - startedAt,
+      error,
+    });
+  }
+};
+
 const scheduleStaticRefresh = () => {
   const run = async () => {
     try {
-      await refreshStaticData();
-      markDbSuccess();
-    } catch (error) {
-      markDbError(error);
-      console.error("Static refresh failed", error);
+      await runStaticRefresh("scheduled");
     } finally {
       setTimeout(run, 6 * 60 * 60 * 1000);
     }
@@ -2409,10 +2442,7 @@ app.listen(port);
 console.log(`Backend listening on http://localhost:${port}`);
 
 if (INGEST_ENABLED) {
-  await refreshStaticData().catch((error) => {
-    markDbError(error);
-    console.error("Initial static refresh failed", error);
-  });
+  await runStaticRefresh("startup");
   await ensureStaticCachesLoaded().catch((error) => {
     markDbError(error);
     console.error("Static cache load failed", error);

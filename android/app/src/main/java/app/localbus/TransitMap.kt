@@ -110,7 +110,7 @@ fun TransitMap(
                     }
                     readyMap.addOnMapClickListener { point ->
                         val activeStyle = style ?: return@addOnMapClickListener false
-                        val features = readyMap.queryRenderedFeatures(readyMap.projection.toScreenLocation(point), STOPS_LAYER, *VEHICLE_ARROW_LAYERS.toTypedArray())
+                        val features = readyMap.queryRenderedFeatures(readyMap.projection.toScreenLocation(point), STOPS_LAYER, STOPS_HIT_LAYER, *VEHICLE_ARROW_LAYERS.toTypedArray())
                         val feature = features.firstOrNull() ?: return@addOnMapClickListener false
                         feature.properties()?.get("kind")?.asString?.let { kind ->
                             val id = feature.properties()?.get("id")?.asString?.toLongOrNull()
@@ -132,6 +132,8 @@ fun TransitMap(
 private fun addLayers(style: Style, secondary: Int) {
     style.addSource(GeoJsonSource(STOPS_SOURCE, FeatureCollection.fromFeatures(emptyList())))
     style.addLayer(CircleLayer(STOPS_LAYER, STOPS_SOURCE).withProperties(circleRadius(5f), circleColor("#${Integer.toHexString(secondary).takeLast(6)}"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(1.5f), circleOpacity(0.92f)))
+    // A generous but visually imperceptible layer makes small stop markers comfortable to tap.
+    style.addLayer(CircleLayer(STOPS_HIT_LAYER, STOPS_SOURCE).withProperties(circleRadius(18f), circleColor("#FFFFFF"), circleOpacity(0.01f)))
     VEHICLE_BUCKETS.forEach { bucket ->
         style.addSource(GeoJsonSource(bucket.sourceId, FeatureCollection.fromFeatures(emptyList())))
         style.addImage(bucket.imageId, busArrowBitmap(bucket.color))
@@ -141,6 +143,7 @@ private fun addLayers(style: Style, secondary: Int) {
 }
 
 private fun render(style: Style, state: TransitUiState, dark: Boolean, bearingTracker: VehicleBearingTracker, renderState: MapRenderState) {
+    if (!renderState.shouldRender(style, state.snapshot, state.selectedRoutes, state.direction, dark)) return
     val selected = state.selectedRoutes
     val routeIds = if (selected.isEmpty()) state.snapshot.routes.map { it.id }.toSet() else selected
     val tripsByRoute = state.snapshot.trips.filter { it.routeId in routeIds && (state.direction == null || it.direction == state.direction) }.groupBy { it.routeId }
@@ -267,6 +270,22 @@ private class VehicleBearingTracker {
 private class MapRenderState {
     private val routeLayerIds = mutableListOf<String>()
     private val routeSourceIds = mutableListOf<String>()
+    private var lastStyle: Style? = null
+    private var lastSnapshot: TransitSnapshot? = null
+    private var lastSelectedRoutes: Set<Long>? = null
+    private var lastDirection: Int? = null
+    private var lastDark: Boolean? = null
+
+    fun shouldRender(style: Style, snapshot: TransitSnapshot, selectedRoutes: Set<Long>, direction: Int?, dark: Boolean): Boolean {
+        val unchanged = lastStyle === style && lastSnapshot === snapshot && lastSelectedRoutes == selectedRoutes && lastDirection == direction && lastDark == dark
+        if (unchanged) return false
+        lastStyle = style
+        lastSnapshot = snapshot
+        lastSelectedRoutes = selectedRoutes.toSet()
+        lastDirection = direction
+        lastDark = dark
+        return true
+    }
 
     fun replaceRouteLayers(style: Style, routes: List<Pair<Long, List<Feature>>>, routeById: Map<Long, Route>, dark: Boolean) {
         routeLayerIds.forEach { layerId -> style.getLayer(layerId)?.let { style.removeLayer(layerId) } }
@@ -342,6 +361,7 @@ private const val MAP_LIGHT = "https://tiles.openfreemap.org/styles/positron"
 private const val MAP_DARK = "https://tiles.openfreemap.org/styles/dark"
 private const val STOPS_SOURCE = "transit-stops-source"
 private const val STOPS_LAYER = "transit-stops-layer"
+private const val STOPS_HIT_LAYER = "transit-stops-hit-layer"
 
 private data class VehicleBucket(val sourceId: String, val circleLayerId: String, val arrowLayerId: String, val imageId: String, val color: String)
 private val VEHICLE_BUCKETS = listOf(

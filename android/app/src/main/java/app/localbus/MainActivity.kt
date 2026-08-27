@@ -8,8 +8,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.scrollable
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,6 +51,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
@@ -77,6 +82,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -94,6 +100,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -254,21 +262,32 @@ private fun VehicleCard(vehicle: Vehicle, modifier: Modifier, onClose: () -> Uni
 @Composable
 private fun StopSheet(state: TransitUiState, viewModel: TransitViewModel) {
     val stop = state.selectedStop ?: return
-    val routesByTrip = state.snapshot.trips.associate { it.id to it.routeId }
-    val stopRoutes = state.snapshot.stopTimes.filter { it.stopId == stop.id }.mapNotNull { routesByTrip[it.tripId] }.distinct().sorted()
+    var routeInfo by remember(stop.id, state.snapshot) { mutableStateOf<StopRouteInfo?>(null) }
+    LaunchedEffect(stop.id, state.snapshot) {
+        routeInfo = null
+        routeInfo = withContext(Dispatchers.Default) { stopRouteInfo(state.snapshot, stop.id) }
+    }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
         Text(stop.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("Stop ${stop.id}${stop.code.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("${"%.5f".format(stop.latitude)}, ${"%.5f".format(stop.longitude)} · ${stopLocationType(stop.locationType)}", Modifier.padding(top = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("Open routes", Modifier.padding(top = 20.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FilterChip(selected = stopRoutes.all { it in state.selectedRoutes } && state.selectedRoutes.isNotEmpty(), onClick = { viewModel.showOnlyRoutes(stopRoutes) }, label = { Text("All") })
-            stopRoutes.take(8).forEach { routeId ->
-                val route = state.snapshot.routes.firstOrNull { it.id == routeId }
-                FilterChip(selected = state.selectedRoutes.isEmpty() || routeId in state.selectedRoutes, onClick = { viewModel.toggleRoute(routeId) }, label = { Text(route?.shortName ?: routeId.toString()) })
+        if (state.arrivals == null || state.timeline == null) {
+            Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Text("Loading stop details…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Text("${stopRoutes.size} routes · ${state.snapshot.stopTimes.count { it.stopId == stop.id }} scheduled trips", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Open routes", Modifier.padding(top = 20.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        routeInfo?.let { info ->
+            Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = info.routes.all { it in state.selectedRoutes } && state.selectedRoutes.isNotEmpty(), onClick = { viewModel.showOnlyRoutes(info.routes) }, label = { Text("All") })
+                info.routes.take(8).forEach { routeId ->
+                    val route = state.snapshot.routes.firstOrNull { it.id == routeId }
+                    FilterChip(selected = state.selectedRoutes.isEmpty() || routeId in state.selectedRoutes, onClick = { viewModel.toggleRoute(routeId) }, label = { Text(route?.shortName ?: routeId.toString()) })
+                }
+            }
+            Text("${info.routes.size} routes · ${info.scheduledTrips} scheduled trips", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         Text("Live arrivals", Modifier.padding(top = 22.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         val arrivals = state.arrivals
         if (arrivals == null) Text("Loading live ETA…", Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -324,10 +343,26 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
     var selectedPoint by remember(timeline.offset, selectedRoutes) { mutableStateOf<TimelineChartPoint?>(null) }
     var zoom by remember(timeline.offset) { mutableFloatStateOf(1f) }
     var clock by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    val scrollState = rememberScrollState()
     val timelineHeight = 1536f
     val density = LocalDensity.current
+    val timelineHeightPx = with(density) { timelineHeight.dp.toPx() }
     var viewportWidth by remember { mutableIntStateOf(0) }
+    var viewportHeight by remember { mutableIntStateOf(0) }
+    var scrollOffset by remember(timeline.offset) { mutableFloatStateOf(0f) }
+    fun maxScroll(scale: Float = zoom) = (timelineHeightPx * scale - viewportHeight).coerceAtLeast(0f)
+    val timelineScrollState = rememberScrollableState { delta ->
+        val previous = scrollOffset
+        scrollOffset = (scrollOffset - delta).coerceIn(0f, maxScroll())
+        previous - scrollOffset
+    }
+    val transformState = rememberTransformableState { centroid, zoomChange, _, _ ->
+        val previousZoom = zoom
+        val nextZoom = (previousZoom * zoomChange).coerceIn(1f, 6f)
+        if (nextZoom == previousZoom) return@rememberTransformableState
+        val focalContentY = (scrollOffset + centroid.y) / previousZoom
+        zoom = nextZoom
+        scrollOffset = (focalContentY * nextZoom - centroid.y).coerceIn(0f, maxScroll(nextZoom))
+    }
     LaunchedEffect(Unit) { while (true) { delay(10_000); clock = System.currentTimeMillis() } }
     LaunchedEffect(selectedPoint) {
         if (selectedPoint != null) {
@@ -338,7 +373,7 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
     LaunchedEffect(timeline.offset, range.min, range.max) {
         withFrameNanos { }
         val nowRatio = ((minuteOfDay(clock) - range.min) / range.span).coerceIn(0f, 1f)
-        scrollState.scrollTo((scrollState.maxValue * nowRatio - 96.dp.value).toInt().coerceAtLeast(0))
+        scrollOffset = (maxScroll() * nowRatio - with(density) { 96.dp.toPx() }).coerceIn(0f, maxScroll())
     }
     Column(Modifier.padding(top = 8.dp)) {
         Row(Modifier.fillMaxWidth().padding(start = 36.dp)) { timeline.days.forEach { day -> Text(if (day.today) "Today" else day.date.takeLast(5), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = labelColor, maxLines = 1) } }
@@ -346,29 +381,19 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
             Modifier
                 .fillMaxWidth()
                 .height(384.dp)
-                .onSizeChanged { viewportWidth = it.width },
+                .clipToBounds()
+                .onSizeChanged { size -> viewportWidth = size.width; viewportHeight = size.height },
         ) {
         Column(
             Modifier
                 .fillMaxSize()
-                .pointerInput(timeline.offset) {
-                    detectTransformGestures { centroid, _, gestureZoom, _ ->
-                        val previousZoom = zoom
-                        val nextZoom = (previousZoom * gestureZoom).coerceIn(1f, 6f)
-                        if (nextZoom != previousZoom) {
-                            val contentRatio = (scrollState.value + centroid.y) / (timelineHeight * previousZoom)
-                            zoom = nextZoom
-                            val target = contentRatio * timelineHeight * nextZoom - centroid.y
-                            scrollState.dispatchRawDelta(target - scrollState.value)
-                        }
-                    }
-                }
-                .verticalScroll(scrollState),
+                .transformable(state = transformState, canPan = { false }, lockRotationOnZoomPan = true)
+                .scrollable(state = timelineScrollState, orientation = Orientation.Vertical),
         ) {
         Canvas(
             Modifier
                 .fillMaxWidth()
-                .height((timelineHeight * zoom).dp)
+                .fillMaxHeight()
                 .padding(top = 8.dp)
                 .pointerInput(points, zoom, range) {
                     detectTapGestures { tap ->
@@ -377,7 +402,7 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
                         val nearest = points.mapNotNull { (dayIndex, point) ->
                             val time = runCatching { Instant.parse(point.timestamp).atZone(ZoneId.systemDefault()) }.getOrNull() ?: return@mapNotNull null
                             val x = left + col * (dayIndex + .5f)
-                            val y = size.height * ((time.hour * 60 + time.minute + time.second / 60f - range.min) / range.span)
+                            val y = timelineHeightPx * zoom * ((time.hour * 60 + time.minute + time.second / 60f - range.min) / range.span) - scrollOffset
                             TimelineChartPoint(dayIndex, point, x, y)
                         }.minByOrNull { candidate -> (candidate.x - tap.x) * (candidate.x - tap.x) + (candidate.y - tap.y) * (candidate.y - tap.y) }
                         selectedPoint = nearest?.takeIf { candidate -> (candidate.x - tap.x) * (candidate.x - tap.x) + (candidate.y - tap.y) * (candidate.y - tap.y) <= 22.dp.toPx() * 22.dp.toPx() }
@@ -388,17 +413,17 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
             val col = (size.width - left) / timeline.days.size
             for (hour in (range.min.toInt() / 60)..(range.max.toInt() / 60)) {
                 val minute = hour * 60f
-                val y = size.height * ((minute - range.min) / range.span)
+                val y = timelineHeightPx * zoom * ((minute - range.min) / range.span) - scrollOffset
                 drawLine(labelColor.copy(alpha = .2f), Offset(left, y), Offset(size.width, y), 1f)
                 drawContext.canvas.nativeCanvas.drawText("${hour.toString().padStart(2, '0')}:00", 0f, y + 10f, android.graphics.Paint().apply { color = labelColor.toArgb(); textSize = 24f })
             }
-            val nowY = size.height * ((minuteOfDay(clock) - range.min) / range.span)
+            val nowY = timelineHeightPx * zoom * ((minuteOfDay(clock) - range.min) / range.span) - scrollOffset
             if (nowY in 0f..size.height) drawLine(nowColor.copy(alpha = .7f), Offset(left, nowY), Offset(size.width, nowY), 3f)
             points.forEach { (dayIndex, point) ->
                 val time = runCatching { Instant.parse(point.timestamp).atZone(ZoneId.systemDefault()) }.getOrNull()
                 val minutes = time?.let { it.hour * 60 + it.minute + it.second / 60f } ?: return@forEach
                 val x = left + col * (dayIndex + .5f)
-                val y = size.height * ((minutes - range.min) / range.span)
+                val y = timelineHeightPx * zoom * ((minutes - range.min) / range.span) - scrollOffset
                 val color = colors[point.routeId] ?: Color.Black
                 if (point.predicted) drawCircle(color, 8.dp.toPx(), Offset(x, y), style = Stroke(3.dp.toPx())) else drawCircle(color, 8.dp.toPx(), Offset(x, y))
             }
@@ -411,7 +436,7 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
             val inset = with(density) { 4.dp.toPx() }
             val tooltipHeight = with(density) { 40.dp.toPx() }
             val x = (selected.x - tooltipWidth / 2).coerceIn(inset, (viewportWidth - tooltipWidth - inset).coerceAtLeast(0f))
-            val pointY = selected.y - scrollState.value
+            val pointY = selected.y
             val below = pointY + with(density) { 14.dp.toPx() }
             val y = if (below + tooltipHeight <= with(density) { 380.dp.toPx() }) below else (pointY - tooltipHeight - with(density) { 14.dp.toPx() }).coerceAtLeast(inset)
             Surface(
@@ -428,6 +453,14 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
         }
     }
 }
+}
+
+private data class StopRouteInfo(val routes: List<Long>, val scheduledTrips: Int)
+
+private fun stopRouteInfo(snapshot: TransitSnapshot, stopId: Long): StopRouteInfo {
+    val routesByTrip = snapshot.trips.associate { it.id to it.routeId }
+    val stopTimes = snapshot.stopTimes.filter { it.stopId == stopId }
+    return StopRouteInfo(stopTimes.mapNotNull { routesByTrip[it.tripId] }.distinct().sorted(), stopTimes.size)
 }
 
 private data class TimelineChartPoint(val dayIndex: Int, val point: TimelinePoint, val x: Float, val y: Float)
