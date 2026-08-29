@@ -9,17 +9,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.rememberScrollableState
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.scrollable
-import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -77,6 +72,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -97,6 +93,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.time.Instant
+import java.time.DayOfWeek
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
@@ -297,8 +295,6 @@ private fun StopSheet(state: TransitUiState, viewModel: TransitViewModel) {
         Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { state.timeline?.takeIf { it.canGoOlder }?.let { viewModel.changeTimeline(it.offset + 1) } }, enabled = state.timeline?.canGoOlder == true) { Icon(Icons.Filled.ChevronLeft, "Show earlier day") }
             IconButton(onClick = { state.timeline?.takeIf { it.canGoNewer }?.let { viewModel.changeTimeline(it.offset - 1) } }, enabled = state.timeline?.canGoNewer == true) { Icon(Icons.Filled.ChevronRight, "Show later day") }
-            Spacer(Modifier.weight(1f))
-            Text("actual • outlined = predicted", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         TimelineChart(state.timeline, state.selectedRoutes)
     }
@@ -338,6 +334,7 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
     }
     val colors = timeline.routes.associate { it.id to routeColor(it.color.orEmpty(), MaterialTheme.colorScheme.primary) }
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val weekendColor = if (isSystemInDarkTheme()) Color(0xFFFB7185) else Color(0xFFF43F5E)
     val nowColor = MaterialTheme.colorScheme.primary
     val range = timelineRange(points.map { it.second })
     var selectedPoint by remember(timeline.offset, selectedRoutes) { mutableStateOf<TimelineChartPoint?>(null) }
@@ -350,19 +347,8 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
     var viewportHeight by remember { mutableIntStateOf(0) }
     var scrollOffset by remember(timeline.offset) { mutableFloatStateOf(0f) }
     fun maxScroll(scale: Float = zoom) = (timelineHeightPx * scale - viewportHeight).coerceAtLeast(0f)
-    val timelineScrollState = rememberScrollableState { delta ->
-        val previous = scrollOffset
-        scrollOffset = (scrollOffset - delta).coerceIn(0f, maxScroll())
-        previous - scrollOffset
-    }
-    val transformState = rememberTransformableState { centroid, zoomChange, _, _ ->
-        val previousZoom = zoom
-        val nextZoom = (previousZoom * zoomChange).coerceIn(1f, 6f)
-        if (nextZoom == previousZoom) return@rememberTransformableState
-        val focalContentY = (scrollOffset + centroid.y) / previousZoom
-        zoom = nextZoom
-        scrollOffset = (focalContentY * nextZoom - centroid.y).coerceIn(0f, maxScroll(nextZoom))
-    }
+    val currentZoom by rememberUpdatedState(zoom)
+    val currentScrollOffset by rememberUpdatedState(scrollOffset)
     LaunchedEffect(Unit) { while (true) { delay(10_000); clock = System.currentTimeMillis() } }
     LaunchedEffect(selectedPoint) {
         if (selectedPoint != null) {
@@ -376,7 +362,19 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
         scrollOffset = (maxScroll() * nowRatio - with(density) { 96.dp.toPx() }).coerceIn(0f, maxScroll())
     }
     Column(Modifier.padding(top = 8.dp)) {
-        Row(Modifier.fillMaxWidth().padding(start = 36.dp)) { timeline.days.forEach { day -> Text(if (day.today) "Today" else day.date.takeLast(5), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = labelColor, maxLines = 1) } }
+        Row(Modifier.fillMaxWidth().padding(start = 36.dp)) {
+            timeline.days.forEach { day ->
+                val weekend = isWeekend(day.date)
+                Text(
+                    if (day.today) "Today" else day.date.takeLast(5),
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (weekend) weekendColor else labelColor,
+                    fontWeight = if (weekend) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            }
+        }
         Box(
             Modifier
                 .fillMaxWidth()
@@ -387,22 +385,30 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
         Column(
             Modifier
                 .fillMaxSize()
-                .transformable(state = transformState, canPan = { false }, lockRotationOnZoomPan = true)
-                .scrollable(state = timelineScrollState, orientation = Orientation.Vertical),
+                .pointerInput(timeline.offset, range) {
+                    detectTransformGestures(panZoomLock = true) { centroid, pan, zoomChange, _ ->
+                        val previousZoom = zoom
+                        val nextZoom = (previousZoom * zoomChange).coerceIn(1f, 6f)
+                        val focalContentY = (scrollOffset + centroid.y) / previousZoom
+                        zoom = nextZoom
+                        scrollOffset = (focalContentY * nextZoom - centroid.y - pan.y)
+                            .coerceIn(0f, maxScroll(nextZoom))
+                    }
+                },
         ) {
         Canvas(
             Modifier
                 .fillMaxWidth()
                 .fillMaxHeight()
                 .padding(top = 8.dp)
-                .pointerInput(points, zoom, range) {
+                .pointerInput(points, range, timeline.offset) {
                     detectTapGestures { tap ->
                         val left = 34.dp.toPx()
                         val col = (size.width - left) / timeline.days.size
                         val nearest = points.mapNotNull { (dayIndex, point) ->
                             val time = runCatching { Instant.parse(point.timestamp).atZone(ZoneId.systemDefault()) }.getOrNull() ?: return@mapNotNull null
                             val x = left + col * (dayIndex + .5f)
-                            val y = timelineHeightPx * zoom * ((time.hour * 60 + time.minute + time.second / 60f - range.min) / range.span) - scrollOffset
+                            val y = timelineHeightPx * currentZoom * ((time.hour * 60 + time.minute + time.second / 60f - range.min) / range.span) - currentScrollOffset
                             TimelineChartPoint(dayIndex, point, x, y)
                         }.minByOrNull { candidate -> (candidate.x - tap.x) * (candidate.x - tap.x) + (candidate.y - tap.y) * (candidate.y - tap.y) }
                         selectedPoint = nearest?.takeIf { candidate -> (candidate.x - tap.x) * (candidate.x - tap.x) + (candidate.y - tap.y) * (candidate.y - tap.y) <= 22.dp.toPx() * 22.dp.toPx() }
@@ -466,6 +472,10 @@ private fun stopRouteInfo(snapshot: TransitSnapshot, stopId: Long): StopRouteInf
 private data class TimelineChartPoint(val dayIndex: Int, val point: TimelinePoint, val x: Float, val y: Float)
 
 private data class TimelineRange(val min: Float, val max: Float) { val span: Float get() = (max - min).coerceAtLeast(1f) }
+
+private fun isWeekend(date: String): Boolean = runCatching {
+    LocalDate.parse(date).dayOfWeek in setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
+}.getOrDefault(false)
 
 private fun timelineRange(points: List<TimelinePoint>): TimelineRange {
     val values = points.mapNotNull { runCatching { minuteOfDay(Instant.parse(it.timestamp).toEpochMilli()) }.getOrNull() }

@@ -29,6 +29,7 @@ import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory.circleColor
@@ -36,6 +37,8 @@ import org.maplibre.android.style.layers.PropertyFactory.circleOpacity
 import org.maplibre.android.style.layers.PropertyFactory.circleRadius
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth
+import org.maplibre.android.style.layers.PropertyFactory.fillColor
+import org.maplibre.android.style.layers.PropertyFactory.fillOutlineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineCap
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineJoin
@@ -105,6 +108,7 @@ fun TransitMap(
                     }
                     readyMap.setStyle(if (dark) MAP_DARK else MAP_LIGHT) { readyStyle ->
                         style = readyStyle
+                        tuneBaseMapContrast(readyStyle, dark)
                         addLayers(readyStyle, colors.secondary.toArgb())
                         render(readyStyle, newestState, dark, bearingTracker, renderState)
                     }
@@ -127,6 +131,28 @@ fun TransitMap(
         update = { if (style != null) render(style!!, state, dark, bearingTracker, renderState) },
         modifier = modifier.fillMaxSize(),
     )
+}
+
+private fun tuneBaseMapContrast(style: Style, dark: Boolean) {
+    if (!dark) return
+
+    (style.getLayer("building") as? FillLayer)?.setProperties(
+        fillColor("#262b34"),
+        fillOutlineColor("#3a414c"),
+    )
+    mapOf(
+        "highway_path" to "#4a505b",
+        "highway_minor" to "#3f4652",
+        "highway_major_casing" to "#656d7a",
+        "highway_major_inner" to "#343b46",
+        "highway_major_subtle" to "#4b5360",
+        "highway_motorway_casing" to "#707987",
+        "highway_motorway_inner" to "#3d4551",
+        "highway_motorway_subtle" to "#48515e",
+        "road_pier" to "#3f4652",
+    ).forEach { (layerId, color) ->
+        (style.getLayer(layerId) as? LineLayer)?.setProperties(lineColor(color), lineOpacity(1f))
+    }
 }
 
 private fun addLayers(style: Style, secondary: Int) {
