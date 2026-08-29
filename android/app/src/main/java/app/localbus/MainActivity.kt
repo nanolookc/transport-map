@@ -5,11 +5,18 @@ import android.graphics.Color as AndroidColor
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.core.animateDecay
+import androidx.compose.animation.core.FloatExponentialDecaySpec
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -72,6 +79,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -85,6 +93,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -99,7 +110,10 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -363,6 +377,8 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
     var viewportWidth by remember { mutableIntStateOf(0) }
     var viewportHeight by remember { mutableIntStateOf(0) }
     var scrollOffset by remember(timeline.offset) { mutableFloatStateOf(0f) }
+    val flingScope = rememberCoroutineScope()
+    var flingJob by remember { mutableStateOf<Job?>(null) }
     fun maxScroll(scale: Float = zoom) = (timelineHeightPx * scale - viewportHeight).coerceAtLeast(0f)
     val currentZoom by rememberUpdatedState(zoom)
     val currentScrollOffset by rememberUpdatedState(scrollOffset)
@@ -403,13 +419,60 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
             Modifier
                 .fillMaxSize()
                 .pointerInput(timeline.offset, range) {
-                    detectTransformGestures(panZoomLock = true) { centroid, pan, zoomChange, _ ->
-                        val previousZoom = zoom
-                        val nextZoom = (previousZoom * zoomChange).coerceIn(1f, 6f)
-                        val focalContentY = (scrollOffset + centroid.y) / previousZoom
-                        zoom = nextZoom
-                        scrollOffset = (focalContentY * nextZoom - centroid.y - pan.y)
-                            .coerceIn(0f, maxScroll(nextZoom))
+                    awaitEachGesture {
+                        val velocityTracker = VelocityTracker()
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        flingJob?.cancel()
+                        velocityTracker.addPointerInputChange(down)
+                        var accumulatedZoom = 1f
+                        var accumulatedPan = Offset.Zero
+                        var pastTouchSlop = false
+                        var multiTouch = false
+                        val touchSlop = viewConfiguration.touchSlop
+
+                        do {
+                            val event = awaitPointerEvent()
+                            if (event.changes.count { it.pressed } > 1) multiTouch = true
+                            if (!multiTouch) {
+                                event.changes.firstOrNull { it.id == down.id }
+                                    ?.let(velocityTracker::addPointerInputChange)
+                            }
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            if (!pastTouchSlop) {
+                                accumulatedZoom *= zoomChange
+                                accumulatedPan += panChange
+                                val zoomMotion = abs(1f - accumulatedZoom) * event.calculateCentroidSize(useCurrent = false)
+                                if (zoomMotion > touchSlop || accumulatedPan.getDistance() > touchSlop) pastTouchSlop = true
+                            }
+                            if (pastTouchSlop) {
+                                val centroid = event.calculateCentroid(useCurrent = false)
+                                if (zoomChange != 1f || panChange != Offset.Zero) {
+                                    val previousZoom = currentZoom
+                                    val nextZoom = (previousZoom * zoomChange).coerceIn(1f, 6f)
+                                    val focalContentY = (currentScrollOffset + centroid.y) / previousZoom
+                                    zoom = nextZoom
+                                    scrollOffset = (focalContentY * nextZoom - centroid.y - panChange.y)
+                                        .coerceIn(0f, maxScroll(nextZoom))
+                                }
+                                event.changes.filter { it.positionChanged() }.forEach { it.consume() }
+                            }
+                        } while (event.changes.any { it.pressed })
+
+                        if (!multiTouch && pastTouchSlop) {
+                            val velocityY = velocityTracker.calculateVelocity().y
+                            if (abs(velocityY) > 100f) {
+                                flingJob = flingScope.launch {
+                                    animateDecay(
+                                        initialValue = currentScrollOffset,
+                                        initialVelocity = -velocityY,
+                                        animationSpec = FloatExponentialDecaySpec(frictionMultiplier = 1.5f),
+                                    ) { value, _ ->
+                                        scrollOffset = value.coerceIn(0f, maxScroll(currentZoom))
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
         ) {
