@@ -357,18 +357,31 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
         Text("No history for these days.", Modifier.padding(vertical = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         return
     }
-    val allowed = if (selectedRoutes.isEmpty()) timeline.routes.map { it.id }.toSet() else selectedRoutes
-    val points = timeline.days.flatMapIndexed { dayIndex, day -> day.points.filter { it.routeId in allowed }.map { dayIndex to it } }
+    val allRouteIds = remember(timeline) { timeline.routes.map { it.id }.toSet() }
+    val allowed = if (selectedRoutes.isEmpty()) allRouteIds else selectedRoutes
+    val points = remember(timeline, allowed) {
+        timeline.days.flatMapIndexed { dayIndex, day ->
+            day.points.mapNotNull { point ->
+                if (point.routeId !in allowed) return@mapNotNull null
+                val time = runCatching { Instant.parse(point.timestamp).atZone(ZoneId.systemDefault()) }.getOrNull()
+                    ?: return@mapNotNull null
+                PreparedTimelinePoint(dayIndex, point, time.hour * 60f + time.minute + time.second / 60f)
+            }
+        }
+    }
     if (points.isEmpty()) {
         Text("No arrivals for the selected routes in this period.", Modifier.padding(vertical = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         return
     }
-    val colors = timeline.routes.associate { it.id to routeColor(it.color.orEmpty(), MaterialTheme.colorScheme.primary) }
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val colors = remember(timeline, primaryColor) {
+        timeline.routes.associate { it.id to routeColor(it.color.orEmpty(), primaryColor) }
+    }
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val weekendColor = if (isSystemInDarkTheme()) Color(0xFFFB7185) else Color(0xFFF43F5E)
     val nowColor = MaterialTheme.colorScheme.primary
-    val range = timelineRange(points.map { it.second })
-    var selectedPoint by remember(timeline.offset, selectedRoutes) { mutableStateOf<TimelineChartPoint?>(null) }
+    val range = remember(points) { timelineRange(points) }
+    var selectedPoint by remember(timeline.offset, selectedRoutes) { mutableStateOf<SelectedTimelinePoint?>(null) }
     var zoom by remember(timeline.offset) { mutableFloatStateOf(1f) }
     var clock by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val timelineHeight = 1536f
@@ -382,6 +395,14 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
     fun maxScroll(scale: Float = zoom) = (timelineHeightPx * scale - viewportHeight).coerceAtLeast(0f)
     val currentZoom by rememberUpdatedState(zoom)
     val currentScrollOffset by rememberUpdatedState(scrollOffset)
+    val pointRadius = with(density) { 8.dp.toPx() }
+    val predictedStroke = remember(density) { Stroke(with(density) { 3.dp.toPx() }) }
+    val hourLabelPaint = remember(labelColor) {
+        android.graphics.Paint().apply {
+            color = labelColor.toArgb()
+            textSize = with(density) { 12.dp.toPx() }
+        }
+    }
     LaunchedEffect(Unit) { while (true) { delay(10_000); clock = System.currentTimeMillis() } }
     LaunchedEffect(selectedPoint) {
         if (selectedPoint != null) {
@@ -485,11 +506,10 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
                     detectTapGestures { tap ->
                         val left = 34.dp.toPx()
                         val col = (size.width - left) / timeline.days.size
-                        val nearest = points.mapNotNull { (dayIndex, point) ->
-                            val time = runCatching { Instant.parse(point.timestamp).atZone(ZoneId.systemDefault()) }.getOrNull() ?: return@mapNotNull null
-                            val x = left + col * (dayIndex + .5f)
-                            val y = timelineHeightPx * currentZoom * ((time.hour * 60 + time.minute + time.second / 60f - range.min) / range.span) - currentScrollOffset
-                            TimelineChartPoint(dayIndex, point, x, y)
+                        val nearest = points.map { point ->
+                            val x = left + col * (point.dayIndex + .5f)
+                            val y = timelineHeightPx * currentZoom * ((point.minutes - range.min) / range.span) - currentScrollOffset
+                            SelectedTimelinePoint(point.dayIndex, point.point, x, y)
                         }.minByOrNull { candidate -> (candidate.x - tap.x) * (candidate.x - tap.x) + (candidate.y - tap.y) * (candidate.y - tap.y) }
                         selectedPoint = nearest?.takeIf { candidate -> (candidate.x - tap.x) * (candidate.x - tap.x) + (candidate.y - tap.y) * (candidate.y - tap.y) <= 22.dp.toPx() * 22.dp.toPx() }
                     }
@@ -501,17 +521,16 @@ private fun TimelineChart(timeline: StopTimeline?, selectedRoutes: Set<Long>) {
                 val minute = hour * 60f
                 val y = timelineHeightPx * zoom * ((minute - range.min) / range.span) - scrollOffset
                 drawLine(labelColor.copy(alpha = .2f), Offset(left, y), Offset(size.width, y), 1f)
-                drawContext.canvas.nativeCanvas.drawText("${hour.toString().padStart(2, '0')}:00", 0f, y + 10f, android.graphics.Paint().apply { color = labelColor.toArgb(); textSize = 24f })
+                drawContext.canvas.nativeCanvas.drawText("${hour.toString().padStart(2, '0')}:00", 0f, y + 10f, hourLabelPaint)
             }
             val nowY = timelineHeightPx * zoom * ((minuteOfDay(clock) - range.min) / range.span) - scrollOffset
             if (nowY in 0f..size.height) drawLine(nowColor.copy(alpha = .7f), Offset(left, nowY), Offset(size.width, nowY), 3f)
-            points.forEach { (dayIndex, point) ->
-                val time = runCatching { Instant.parse(point.timestamp).atZone(ZoneId.systemDefault()) }.getOrNull()
-                val minutes = time?.let { it.hour * 60 + it.minute + it.second / 60f } ?: return@forEach
-                val x = left + col * (dayIndex + .5f)
-                val y = timelineHeightPx * zoom * ((minutes - range.min) / range.span) - scrollOffset
-                val color = colors[point.routeId] ?: Color.Black
-                if (point.predicted) drawCircle(color, 8.dp.toPx(), Offset(x, y), style = Stroke(3.dp.toPx())) else drawCircle(color, 8.dp.toPx(), Offset(x, y))
+            points.forEach { point ->
+                val y = timelineHeightPx * zoom * ((point.minutes - range.min) / range.span) - scrollOffset
+                if (y < -pointRadius || y > size.height + pointRadius) return@forEach
+                val x = left + col * (point.dayIndex + .5f)
+                val color = colors[point.point.routeId] ?: Color.Black
+                if (point.point.predicted) drawCircle(color, pointRadius, Offset(x, y), style = predictedStroke) else drawCircle(color, pointRadius, Offset(x, y))
             }
         }
         }
@@ -549,7 +568,8 @@ private fun stopRouteInfo(snapshot: TransitSnapshot, stopId: Long): StopRouteInf
     return StopRouteInfo(stopTimes.mapNotNull { routesByTrip[it.tripId] }.distinct().sorted(), stopTimes.size)
 }
 
-private data class TimelineChartPoint(val dayIndex: Int, val point: TimelinePoint, val x: Float, val y: Float)
+private data class PreparedTimelinePoint(val dayIndex: Int, val point: TimelinePoint, val minutes: Float)
+private data class SelectedTimelinePoint(val dayIndex: Int, val point: TimelinePoint, val x: Float, val y: Float)
 
 private data class TimelineRange(val min: Float, val max: Float) { val span: Float get() = (max - min).coerceAtLeast(1f) }
 
@@ -557,8 +577,8 @@ private fun isWeekend(date: String): Boolean = runCatching {
     LocalDate.parse(date).dayOfWeek in setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
 }.getOrDefault(false)
 
-private fun timelineRange(points: List<TimelinePoint>): TimelineRange {
-    val values = points.mapNotNull { runCatching { minuteOfDay(Instant.parse(it.timestamp).toEpochMilli()) }.getOrNull() }
+private fun timelineRange(points: List<PreparedTimelinePoint>): TimelineRange {
+    val values = points.map { it.minutes }
     if (values.isEmpty()) return TimelineRange(0f, 1440f)
     val min = kotlin.math.floor((values.min() - 60f) / 15f).toFloat() * 15f
     val max = kotlin.math.ceil((values.max() + 60f) / 15f).toFloat() * 15f
