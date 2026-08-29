@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Kotlin incremental compilation caches
+.kotlin/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

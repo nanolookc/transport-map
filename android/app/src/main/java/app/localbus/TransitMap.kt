@@ -1,5 +1,6 @@
 package uk.hrebeni.transit
 
+import android.animation.ValueAnimator
 import android.graphics.Color as AndroidColor
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -60,6 +61,8 @@ import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 
+private const val VEHICLE_MOTION_DURATION_MS = 650L
+
 @Composable
 fun TransitMap(
     state: TransitUiState,
@@ -96,7 +99,11 @@ fun TransitMap(
             }
         }
         owner.lifecycle.addObserver(observer)
-        onDispose { owner.lifecycle.removeObserver(observer); mapView.onDestroy() }
+        onDispose {
+            owner.lifecycle.removeObserver(observer)
+            renderState.stopVehicleMotion()
+            mapView.onDestroy()
+        }
     }
 
     AndroidView(
@@ -203,23 +210,16 @@ private fun render(style: Style, state: TransitUiState, dark: Boolean, bearingTr
         Feature.fromGeometry(Point.fromLngLat(stop.longitude, stop.latitude)).also { feature -> feature.addStringProperty("kind", "stop"); feature.addStringProperty("id", stop.id.toString()) }
     }
     val tripById = state.snapshot.trips.associateBy { it.id }
-    val vehicleFeatures = state.snapshot.vehicles.filter { it.routeId in routeIds && it.latitude != null && it.longitude != null }.map { vehicle ->
+    val vehicleTargets = state.snapshot.vehicles.filter { it.routeId in routeIds && it.latitude != null && it.longitude != null }.map { vehicle ->
         val routeBearing = vehicle.tripId?.let { tripById[it] }?.let { trip -> shapeById[trip.shapeId]?.let { shape -> bearingFromShape(vehicle.latitude!!, vehicle.longitude!!, shape) } }
         val bearing = routeBearing ?: bearingTracker.bearing(vehicle) ?: 0.0
-        Feature.fromGeometry(Point.fromLngLat(vehicle.longitude!!, vehicle.latitude!!)).also { feature ->
-            feature.addStringProperty("kind", "vehicle")
-            feature.addStringProperty("id", vehicle.id.toString())
-            feature.addNumberProperty("bearing", bearing)
-            feature.addStringProperty("timestamp", vehicle.timestamp)
-        }
+        VehicleMarkerTarget(vehicle.id, vehicle.latitude!!, vehicle.longitude!!, bearing, vehicle.timestamp, vehicleAgeColor(vehicle.timestamp))
     }
     (style.getSourceAs<GeoJsonSource>(STOPS_SOURCE))?.setGeoJson(FeatureCollection.fromFeatures(stopFeatures.filter { feature ->
         val stopId = feature.properties()?.get("id")?.asString?.toLongOrNull()
         selected.isEmpty() || (stopId != null && stopRouteIds[stopId]?.any(selected::contains) == true)
     }))
-    VEHICLE_BUCKETS.forEach { bucket ->
-        style.getSourceAs<GeoJsonSource>(bucket.sourceId)?.setGeoJson(FeatureCollection.fromFeatures(vehicleFeatures.filter { feature -> vehicleAgeColor(feature.properties()?.get("timestamp")?.asString.orEmpty()) == bucket.color }))
-    }
+    renderState.updateVehicleMotion(style, vehicleTargets)
 }
 
 /** Exact counterpart of the web app's normalizeHexColor() and ensureVisibleColor(). */
@@ -291,6 +291,8 @@ private fun hslToHex(hue: Float, saturation: Float, lightness: Float): String {
 }
 
 private data class VehiclePosition(val latitude: Double, val longitude: Double, val bearing: Double?)
+private data class VehicleMarkerTarget(val id: Long, val latitude: Double, val longitude: Double, val bearing: Double, val timestamp: String, val bucket: String)
+private data class MovingVehicle(val target: VehicleMarkerTarget, val startLatitude: Double, val startLongitude: Double)
 
 private class VehicleBearingTracker {
     private val positions = mutableMapOf<Long, VehiclePosition>()
@@ -314,6 +316,9 @@ private class MapRenderState {
     private var lastSelectedRoutes: Set<Long>? = null
     private var lastDirection: Int? = null
     private var lastDark: Boolean? = null
+    private var vehicleAnimator: ValueAnimator? = null
+    private var vehicleProgress = 1f
+    private var movingVehicles = emptyList<MovingVehicle>()
 
     fun shouldRender(style: Style, snapshot: TransitSnapshot, selectedRoutes: Set<Long>, direction: Int?, dark: Boolean): Boolean {
         val unchanged = lastStyle === style && lastSnapshot === snapshot && lastSelectedRoutes == selectedRoutes && lastDirection == direction && lastDark == dark
@@ -342,6 +347,59 @@ private class MapRenderState {
             ), STOPS_LAYER)
             routeSourceIds += sourceId
             routeLayerIds += layerId
+        }
+    }
+
+    fun updateVehicleMotion(style: Style, targets: List<VehicleMarkerTarget>) {
+        val currentPositions = movingVehicles.associate { moving ->
+            val fraction = vehicleProgress
+            moving.target.id to Pair(
+                moving.startLatitude + (moving.target.latitude - moving.startLatitude) * fraction,
+                moving.startLongitude + (moving.target.longitude - moving.startLongitude) * fraction,
+            )
+        }
+        vehicleAnimator?.cancel()
+        vehicleProgress = 0f
+        movingVehicles = targets.map { target ->
+            val current = currentPositions[target.id]
+            MovingVehicle(target, current?.first ?: target.latitude, current?.second ?: target.longitude)
+        }
+        applyVehiclePositions(style)
+        if (movingVehicles.any { it.startLatitude != it.target.latitude || it.startLongitude != it.target.longitude }) {
+            vehicleAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = VEHICLE_MOTION_DURATION_MS
+                addUpdateListener { animation ->
+                    vehicleProgress = animation.animatedValue as Float
+                    applyVehiclePositions(style)
+                }
+                start()
+            }
+        }
+    }
+
+    fun stopVehicleMotion() {
+        vehicleAnimator?.cancel()
+        vehicleAnimator = null
+    }
+
+    private fun applyVehiclePositions(style: Style) {
+        val byBucket = VEHICLE_BUCKETS.associate { it.color to mutableListOf<Feature>() }
+        movingVehicles.forEach { moving ->
+            val target = moving.target
+            val latitude = moving.startLatitude + (target.latitude - moving.startLatitude) * vehicleProgress
+            val longitude = moving.startLongitude + (target.longitude - moving.startLongitude) * vehicleProgress
+            byBucket[target.bucket]?.add(
+                Feature.fromGeometry(Point.fromLngLat(longitude, latitude)).also { feature ->
+                    feature.addStringProperty("kind", "vehicle")
+                    feature.addStringProperty("id", target.id.toString())
+                    feature.addNumberProperty("bearing", target.bearing)
+                    feature.addStringProperty("timestamp", target.timestamp)
+                },
+            )
+        }
+        VEHICLE_BUCKETS.forEach { bucket ->
+            style.getSourceAs<GeoJsonSource>(bucket.sourceId)
+                ?.setGeoJson(FeatureCollection.fromFeatures(byBucket[bucket.color].orEmpty()))
         }
     }
 }

@@ -108,7 +108,7 @@ class TransitViewModel(application: Application) : AndroidViewModel(application)
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             while (isActive) {
-                delay(20_000)
+                delay(15_000)
                 runCatching { repository.loadVehicles(_state.value.apiBaseUrl) }.onSuccess { (vehicles, fetchedAt) ->
                     _state.update { old -> old.copy(snapshot = old.snapshot.copy(vehicles = vehicles, fetchedAt = fetchedAt), selectedVehicle = old.selectedVehicle?.let { selected -> vehicles.firstOrNull { it.id == selected.id } }) }
                 }

@@ -251,6 +251,8 @@ const markersById = new Map<number, LeafletMarker>();
 const vehiclesById = new Map<number, Vehicle>();
 const lastPositionsById = new Map<number, LatLng>();
 const lastBearingsById = new Map<number, number>();
+const markerPositionsById = new Map<number, LatLng>();
+const markerAnimationFramesById = new Map<number, number>();
 const stopMarkersById = new Map<number, LeafletCircleMarker>();
 const routeLayers: LeafletLayer[] = [];
 const stopLayers: LeafletLayer[] = [];
@@ -267,6 +269,8 @@ const stopTimesUrl = "/api/proxy/stop_times";
 
 const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 const DARK_TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+const VEHICLE_REFRESH_MS = 15_000;
+const VEHICLE_MOTION_MS = 650;
 
 const normalizeHexColor = (value: string): string | null => {
     if (!value) return null;
@@ -1152,6 +1156,40 @@ const hasValidVehiclePosition = (
     return !(vehicle.latitude === 0 && vehicle.longitude === 0);
 };
 
+const moveMarkerSmoothly = (
+    id: number,
+    marker: LeafletMarker,
+    target: LatLng,
+) => {
+    const previousFrame = markerAnimationFramesById.get(id);
+    if (previousFrame !== undefined) {
+        window.cancelAnimationFrame(previousFrame);
+    }
+    const start = markerPositionsById.get(id) ?? target;
+    if (start.lat === target.lat && start.lon === target.lon) {
+        marker.setLatLng([target.lat, target.lon]);
+        markerPositionsById.set(id, target);
+        markerAnimationFramesById.delete(id);
+        return;
+    }
+    const startedAt = performance.now();
+    const step = (now: number) => {
+        const progress = Math.min((now - startedAt) / VEHICLE_MOTION_MS, 1);
+        const position = {
+            lat: start.lat + (target.lat - start.lat) * progress,
+            lon: start.lon + (target.lon - start.lon) * progress,
+        };
+        marker.setLatLng([position.lat, position.lon]);
+        markerPositionsById.set(id, position);
+        if (progress < 1) {
+            markerAnimationFramesById.set(id, window.requestAnimationFrame(step));
+        } else {
+            markerAnimationFramesById.delete(id);
+        }
+    };
+    markerAnimationFramesById.set(id, window.requestAnimationFrame(step));
+};
+
 const updateMarkers = (vehicles: Vehicle[]) => {
     if (!map) return;
     const L = window.L;
@@ -1223,8 +1261,15 @@ const updateMarkers = (vehicles: Vehicle[]) => {
             });
             newMarker.addTo(map);
             markersById.set(vehicle.id, newMarker);
+            markerPositionsById.set(vehicle.id, {
+                lat: vehicle.latitude,
+                lon: vehicle.longitude,
+            });
         } else {
-            marker.setLatLng([vehicle.latitude, vehicle.longitude]);
+            moveMarkerSmoothly(vehicle.id, marker, {
+                lat: vehicle.latitude,
+                lon: vehicle.longitude,
+            });
             marker.setIcon(icon);
         }
     });
@@ -1236,6 +1281,10 @@ const updateMarkers = (vehicles: Vehicle[]) => {
             vehiclesById.delete(id);
             lastPositionsById.delete(id);
             lastBearingsById.delete(id);
+            markerPositionsById.delete(id);
+            const animationFrame = markerAnimationFramesById.get(id);
+            if (animationFrame !== undefined) window.cancelAnimationFrame(animationFrame);
+            markerAnimationFramesById.delete(id);
         }
     });
 
@@ -1541,12 +1590,12 @@ const initMap = async () => {
     fetchStops();
     fetchStopTimes();
     await fetchVehicles();
-    refreshTimer = window.setInterval(fetchVehicles, 20000);
+    refreshTimer = window.setInterval(fetchVehicles, VEHICLE_REFRESH_MS);
     liveStopTimer = window.setInterval(() => {
         const stopId = selectedStop.value?.stop_id;
         if (stopId == null) return;
         fetchLiveStopArrivals(stopId);
-    }, 20000);
+    }, VEHICLE_REFRESH_MS);
 };
 
 onMounted(() => {
@@ -1718,6 +1767,8 @@ onBeforeUnmount(() => {
     if (tickTimer) {
         window.clearInterval(tickTimer);
     }
+    markerAnimationFramesById.forEach((frame) => window.cancelAnimationFrame(frame));
+    markerAnimationFramesById.clear();
     if (locationMessageTimer) {
         window.clearTimeout(locationMessageTimer);
     }

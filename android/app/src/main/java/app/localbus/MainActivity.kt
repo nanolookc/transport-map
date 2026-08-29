@@ -335,9 +335,8 @@ private fun VehicleAccessIcon(icon: androidx.compose.ui.graphics.vector.ImageVec
 @Composable
 private fun StopSheet(state: TransitUiState, viewModel: TransitViewModel) {
     val stop = state.selectedStop ?: return
-    var routeInfo by remember(stop.id, state.snapshot) { mutableStateOf<StopRouteInfo?>(null) }
-    LaunchedEffect(stop.id, state.snapshot) {
-        routeInfo = null
+    var routeInfo by remember(stop.id, state.snapshot.trips, state.snapshot.stopTimes) { mutableStateOf<StopRouteInfo?>(null) }
+    LaunchedEffect(stop.id, state.snapshot.trips, state.snapshot.stopTimes) {
         routeInfo = withContext(Dispatchers.Default) { stopRouteInfo(state.snapshot, stop.id) }
     }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
@@ -355,7 +354,7 @@ private fun StopSheet(state: TransitUiState, viewModel: TransitViewModel) {
         Text("Open routes", Modifier.padding(top = 20.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         routeInfo?.let { info ->
             CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
-                FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilterChip(selected = info.routes.all { it in state.selectedRoutes } && state.selectedRoutes.isNotEmpty(), onClick = { viewModel.showOnlyRoutes(info.routes) }, label = { Text("All") })
                     info.routes.forEach { routeId ->
                         val route = state.snapshot.routes.firstOrNull { it.id == routeId }
