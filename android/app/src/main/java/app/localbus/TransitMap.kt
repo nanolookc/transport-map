@@ -8,6 +8,7 @@ import android.graphics.Path
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -17,6 +18,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -108,7 +111,7 @@ fun TransitMap(
                     }
                     readyMap.setStyle(if (dark) MAP_DARK else MAP_LIGHT) { readyStyle ->
                         style = readyStyle
-                        tuneBaseMapContrast(readyStyle, dark)
+                        tuneBaseMapContrast(readyStyle, dark, colors)
                         addLayers(readyStyle, colors.secondary.toArgb())
                         render(readyStyle, newestState, dark, bearingTracker, renderState)
                     }
@@ -133,27 +136,37 @@ fun TransitMap(
     )
 }
 
-private fun tuneBaseMapContrast(style: Style, dark: Boolean) {
-    if (!dark) return
-
+private fun tuneBaseMapContrast(style: Style, dark: Boolean, colors: ColorScheme) {
+    val background = colors.surface
+    fun tone(color: Color, alpha: Float) = color.copy(alpha = alpha).compositeOver(background)
+    val building = tone(colors.surfaceContainerHigh, if (dark) 0.92f else 0.96f)
+    val outline = tone(colors.outlineVariant, if (dark) 0.68f else 0.82f)
+    // Keep the base map quieter than route lines. Dynamic phone colors only lightly tint roads
+    // in dark mode, where a saturated primary otherwise competes with dark route colors.
+    val minorRoad = tone(colors.onSurfaceVariant, if (dark) 0.16f else 0.24f)
+    val majorRoad = tone(colors.primary, if (dark) 0.22f else 0.36f)
+    val majorCasing = tone(colors.primary, if (dark) 0.3f else 0.52f)
     (style.getLayer("building") as? FillLayer)?.setProperties(
-        fillColor("#262b34"),
-        fillOutlineColor("#3a414c"),
+        fillColor(mapColor(building)),
+        fillOutlineColor(mapColor(outline)),
     )
     mapOf(
-        "highway_path" to "#4a505b",
-        "highway_minor" to "#3f4652",
-        "highway_major_casing" to "#656d7a",
-        "highway_major_inner" to "#343b46",
-        "highway_major_subtle" to "#4b5360",
-        "highway_motorway_casing" to "#707987",
-        "highway_motorway_inner" to "#3d4551",
-        "highway_motorway_subtle" to "#48515e",
-        "road_pier" to "#3f4652",
-    ).forEach { (layerId, color) ->
-        (style.getLayer(layerId) as? LineLayer)?.setProperties(lineColor(color), lineOpacity(1f))
+        "highway_path" to (minorRoad to if (dark) 0.4f else 0.55f),
+        "highway_minor" to (minorRoad to if (dark) 0.45f else 0.6f),
+        "highway_major_casing" to (majorCasing to if (dark) 0.48f else 0.65f),
+        "highway_major_inner" to (majorRoad to if (dark) 0.54f else 0.72f),
+        "highway_major_subtle" to (minorRoad to if (dark) 0.4f else 0.55f),
+        "highway_motorway_casing" to (majorCasing to if (dark) 0.52f else 0.7f),
+        "highway_motorway_inner" to (majorRoad to if (dark) 0.58f else 0.78f),
+        "highway_motorway_subtle" to (minorRoad to if (dark) 0.45f else 0.6f),
+        "road_pier" to (minorRoad to if (dark) 0.4f else 0.55f),
+    ).forEach { (layerId, appearance) ->
+        val (color, opacity) = appearance
+        (style.getLayer(layerId) as? LineLayer)?.setProperties(lineColor(mapColor(color)), lineOpacity(opacity))
     }
 }
+
+private fun mapColor(color: Color): String = "#${(color.toArgb() and 0x00FFFFFF).toString(16).padStart(6, '0')}"
 
 private fun addLayers(style: Style, secondary: Int) {
     style.addSource(GeoJsonSource(STOPS_SOURCE, FeatureCollection.fromFeatures(emptyList())))

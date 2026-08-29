@@ -4,25 +4,53 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
-class TransitRepository {
-    suspend fun loadSnapshot(baseUrl: String): TransitSnapshot = withContext(Dispatchers.IO) {
+data class TransitStaticData(
+    val routes: List<Route>,
+    val trips: List<Trip>,
+    val shapePoints: List<ShapePoint>,
+    val stops: List<Stop>,
+    val stopTimes: List<StopTime>,
+)
+
+class TransitRepository(cacheDir: File) {
+    private val staticCacheFile = File(cacheDir, "transit-static-v1.json")
+    private var inMemoryStatic: TransitStaticData? = null
+
+    suspend fun loadCachedStatic(): TransitStaticData? = withContext(Dispatchers.IO) {
+        inMemoryStatic ?: runCatching {
+            staticData(JSONObject(staticCacheFile.readText()))
+        }.getOrNull()?.also { inMemoryStatic = it }
+    }
+
+    suspend fun refreshStatic(baseUrl: String): TransitStaticData = withContext(Dispatchers.IO) {
         val root = baseUrl.trim().trimEnd('/')
         require(root.startsWith("http://") || root.startsWith("https://")) {
             "API URL must begin with http:// or https://"
         }
-        val vehiclePayload = get(root, "/api/proxy/vehicles")
-        TransitSnapshot(
-            routes = array(get(root, "/api/proxy/routes")).map(::route).sortedWith(compareBy(naturalOrder()) { it.shortName }),
-            trips = array(get(root, "/api/proxy/trips")).map(::trip),
-            shapePoints = array(get(root, "/api/proxy/shapes")).map(::shapePoint),
-            stops = array(get(root, "/api/proxy/stops")).map(::stop),
-            stopTimes = array(get(root, "/api/proxy/stop_times")).map(::stopTime),
-            vehicles = vehicles(vehiclePayload),
-            fetchedAt = vehiclePayload.optString("fetchedAt").ifBlank { null },
-        )
+        val payload = coroutineScope {
+            val routes = async { get(root, "/api/proxy/routes") }
+            val trips = async { get(root, "/api/proxy/trips") }
+            val shapes = async { get(root, "/api/proxy/shapes") }
+            val stops = async { get(root, "/api/proxy/stops") }
+            val stopTimes = async { get(root, "/api/proxy/stop_times") }
+            JSONObject().apply {
+                put("routes", routes.await())
+                put("trips", trips.await())
+                put("shapes", shapes.await())
+                put("stops", stops.await())
+                put("stopTimes", stopTimes.await())
+            }
+        }
+        staticData(payload).also { data ->
+            inMemoryStatic = data
+            runCatching { staticCacheFile.writeText(payload.toString()) }
+        }
     }
 
     suspend fun loadVehicles(baseUrl: String): Pair<List<Vehicle>, String?> = withContext(Dispatchers.IO) {
@@ -82,6 +110,14 @@ class TransitRepository {
     }
 
     private fun array(json: JSONObject): List<JSONObject> = array(json.optJSONArray("items"))
+
+    private fun staticData(json: JSONObject) = TransitStaticData(
+        routes = array(json.optJSONObject("routes")).map(::route).sortedWith(compareBy(naturalOrder()) { it.shortName }),
+        trips = array(json.optJSONObject("trips")).map(::trip),
+        shapePoints = array(json.optJSONObject("shapes")).map(::shapePoint),
+        stops = array(json.optJSONObject("stops")).map(::stop),
+        stopTimes = array(json.optJSONObject("stopTimes")).map(::stopTime),
+    )
 
     private fun vehicles(json: JSONObject): List<Vehicle> = array(json.optJSONArray("vehicles") ?: json.optJSONArray("items")).map(::vehicle)
     private fun array(values: JSONArray?): List<JSONObject> = (0 until (values?.length() ?: 0)).mapNotNull { values?.optJSONObject(it) }

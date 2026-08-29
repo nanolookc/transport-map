@@ -29,9 +29,10 @@ data class TransitUiState(
 
 class TransitViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = application.getSharedPreferences("transport_map", Context.MODE_PRIVATE)
-    private val repository = TransitRepository()
+    private val repository = TransitRepository(application.cacheDir)
     private var refreshJob: Job? = null
     private var stopJob: Job? = null
+    private var staticJob: Job? = null
     private val _state = MutableStateFlow(
         TransitUiState(
             apiBaseUrl = BuildConfig.DEFAULT_API_BASE_URL,
@@ -46,15 +47,60 @@ class TransitViewModel(application: Application) : AndroidViewModel(application)
         refreshJob?.cancel()
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            runCatching { repository.loadSnapshot(_state.value.apiBaseUrl) }
-                .onSuccess { snapshot ->
+            repository.loadCachedStatic()?.let(::applyStatic)
+            val base = _state.value.apiBaseUrl
+            runCatching { repository.loadVehicles(base) }
+                .onSuccess { (vehicles, fetchedAt) ->
                     _state.update { old ->
-                        old.copy(snapshot = snapshot, loading = false, error = null,
-                            selectedVehicle = old.selectedVehicle?.let { selected -> snapshot.vehicles.firstOrNull { it.id == selected.id } })
+                        old.copy(snapshot = old.snapshot.copy(vehicles = vehicles, fetchedAt = fetchedAt), loading = false, error = null,
+                            selectedVehicle = old.selectedVehicle?.let { selected -> vehicles.firstOrNull { it.id == selected.id } })
                     }
                     startVehicleRefresh()
                 }
                 .onFailure { error -> _state.update { it.copy(loading = false, error = error.message ?: "Could not load transport data") } }
+            refreshStatic(base)
+        }
+    }
+
+    private fun refreshStatic(base: String) {
+        staticJob?.cancel()
+        staticJob = viewModelScope.launch {
+            runCatching { retryStaticLoad(base) }
+                .onSuccess { data ->
+                    applyStatic(data)
+                    _state.update { it.copy(error = null) }
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(error = "Map data could not load. Tap refresh to retry.") }
+                }
+        }
+    }
+
+    private suspend fun retryStaticLoad(base: String): TransitStaticData {
+        var lastError: Throwable? = null
+        repeat(3) { index ->
+            try {
+                return repository.refreshStatic(base)
+            } catch (error: Throwable) {
+                lastError = error
+                if (index < 2) {
+                    _state.update { it.copy(error = "Map data retrying (${index + 2}/3)…") }
+                    delay((index + 1) * 1_000L)
+                }
+            }
+        }
+        throw checkNotNull(lastError)
+    }
+
+    private fun applyStatic(data: TransitStaticData) {
+        _state.update { old ->
+            old.copy(snapshot = old.snapshot.copy(
+                routes = data.routes,
+                trips = data.trips,
+                shapePoints = data.shapePoints,
+                stops = data.stops,
+                stopTimes = data.stopTimes,
+            ))
         }
     }
 
@@ -66,6 +112,10 @@ class TransitViewModel(application: Application) : AndroidViewModel(application)
                 runCatching { repository.loadVehicles(_state.value.apiBaseUrl) }.onSuccess { (vehicles, fetchedAt) ->
                     _state.update { old -> old.copy(snapshot = old.snapshot.copy(vehicles = vehicles, fetchedAt = fetchedAt), selectedVehicle = old.selectedVehicle?.let { selected -> vehicles.firstOrNull { it.id == selected.id } }) }
                 }
+                _state.value.selectedStop?.let { stop ->
+                    runCatching { repository.loadArrivals(_state.value.apiBaseUrl, stop.id) }
+                        .onSuccess { arrivals -> _state.update { it.copy(arrivals = arrivals) } }
+                }
             }
         }
     }
@@ -75,6 +125,7 @@ class TransitViewModel(application: Application) : AndroidViewModel(application)
         runCatching { repository.loadVehicles(_state.value.apiBaseUrl) }
             .onSuccess { (vehicles, fetchedAt) -> _state.update { old -> old.copy(refreshing = false, snapshot = old.snapshot.copy(vehicles = vehicles, fetchedAt = fetchedAt)) } }
             .onFailure { error -> _state.update { it.copy(refreshing = false, error = error.message ?: "Could not refresh vehicles") } }
+        if (_state.value.snapshot.stops.isEmpty()) refreshStatic(_state.value.apiBaseUrl)
     }
 
     fun toggleRoute(id: Long) = _state.update { state ->
@@ -131,5 +182,6 @@ class TransitViewModel(application: Application) : AndroidViewModel(application)
     override fun onCleared() {
         refreshJob?.cancel()
         stopJob?.cancel()
+        staticJob?.cancel()
     }
 }

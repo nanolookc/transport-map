@@ -114,26 +114,14 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun TransportApp(viewModel: TransitViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
-    val dark = isSystemInDarkTheme()
     var panel by remember { mutableStateOf<Panel?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
 
     Box(Modifier.fillMaxSize()) {
         TransitMap(state, viewModel::selectStop, viewModel::selectVehicle)
         Column(Modifier.statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp)) {
-            Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.94f), tonalElevation = 3.dp) {
-                Row(Modifier.padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Transport Map", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = if (dark) Color.White else Color.Black)
-                        Text(onlineText(state), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    IconButton(onClick = viewModel::refreshVehicles) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh vehicles", tint = if (dark) Color.White else Color.Black)
-                    }
-                }
-            }
             if (state.favorites.isNotEmpty()) {
-                Row(Modifier.padding(top = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     val allFavoritesActive = state.favorites.isNotEmpty() && state.selectedRoutes.isNotEmpty() && state.favorites.all(state.selectedRoutes::contains)
                     FavoritePill("Favorites", all = true, active = allFavoritesActive) { viewModel.applyFavoriteRoutes() }
                     state.favorites.forEach { id ->
@@ -143,7 +131,12 @@ private fun TransportApp(viewModel: TransitViewModel = viewModel()) {
                 }
             }
         }
-        if (state.selectedVehicle != null) VehicleCard(state.selectedVehicle!!, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 88.dp), onClose = { viewModel.selectVehicle(null) })
+        if (state.selectedVehicle != null) VehicleCard(state.selectedVehicle!!, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 144.dp), onClose = { viewModel.selectVehicle(null) })
+        UpdateControl(
+            state = state,
+            onRefresh = viewModel::refreshVehicles,
+            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 16.dp, bottom = 80.dp),
+        )
         Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             FloatingAction(icon = Icons.Filled.Map, label = "Map", active = true) { panel = null; viewModel.resetMap() }
             FloatingAction(icon = Icons.Outlined.FilterList, label = "Routes") { panel = Panel.ROUTES }
@@ -157,6 +150,30 @@ private fun TransportApp(viewModel: TransitViewModel = viewModel()) {
                 Panel.ROUTES -> RoutesSheet(state, viewModel, false)
                 Panel.FAVORITES -> RoutesSheet(state, viewModel, true)
                 null -> Unit
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateControl(state: TransitUiState, onRefresh: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.96f),
+        tonalElevation = 3.dp,
+    ) {
+        Row(Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                state.error ?: lastUpdatedText(state),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (state.error == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            FilledIconButton(onClick = onRefresh, enabled = !state.refreshing, modifier = Modifier.padding(start = 6.dp).size(40.dp)) {
+                if (state.refreshing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Filled.Refresh, contentDescription = "Refresh vehicles")
             }
         }
     }
@@ -487,10 +504,12 @@ private fun timelineRange(points: List<TimelinePoint>): TimelineRange {
 
 private fun minuteOfDay(timeMillis: Long): Float = Instant.ofEpochMilli(timeMillis).atZone(ZoneId.systemDefault()).let { it.hour * 60f + it.minute + it.second / 60f }
 
-private fun onlineText(state: TransitUiState): String = when {
-    state.loading -> "Loading transport data…"
-    state.snapshot.vehicles.isEmpty() -> "No live vehicles"
-    else -> "${state.snapshot.vehicles.size} vehicles · ${state.snapshot.vehicles.map { it.routeId }.distinct().size} routes · ${state.snapshot.fetchedAt?.let(::relativeTime) ?: "just now"}"
+private fun lastUpdatedText(state: TransitUiState): String = when {
+    state.loading -> "Loading…"
+    state.snapshot.fetchedAt == null -> "Waiting for data"
+    else -> runCatching {
+        "Updated " + DateTimeFormatter.ofPattern("HH:mm").format(Instant.parse(state.snapshot.fetchedAt).atZone(ZoneId.systemDefault()))
+    }.getOrDefault("Updated")
 }
 private fun routeColor(raw: String, fallback: Color): Color = runCatching { Color(AndroidColor.parseColor(if (raw.startsWith("#")) raw else "#$raw")) }.getOrDefault(fallback)
 private fun eta(seconds: Long?, status: String): String = if (status == "arriving") "Arriving" else when { seconds == null -> "No ETA"; seconds < 60 -> "<1 min"; else -> "${(seconds / 60.0).roundToInt()} min" }

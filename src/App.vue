@@ -3,15 +3,11 @@ import { ref } from "vue";
 import { registerSW } from "virtual:pwa-register";
 
 const updateAvailable = ref(false);
-const offlineReady = ref(false);
 
 const updateServiceWorker = registerSW({
     immediate: true,
     onNeedRefresh() {
         updateAvailable.value = true;
-    },
-    onOfflineReady() {
-        offlineReady.value = true;
     },
     onRegisterError(error) {
         console.warn("PWA service worker registration failed", error);
@@ -74,21 +70,6 @@ const applyUpdate = () => {
                 @click="applyUpdate"
             >
                 Reload
-            </button>
-        </div>
-
-        <div
-            v-else-if="offlineReady"
-            class="fixed inset-x-4 bottom-4 z-[3000] mx-auto flex max-w-md items-center gap-3 rounded-lg border border-border bg-background p-3 text-sm shadow-lg"
-            role="status"
-        >
-            <span class="min-w-0 flex-1">The app is ready to open offline.</span>
-            <button
-                type="button"
-                class="rounded-md border border-border px-3 py-1.5"
-                @click="offlineReady = false"
-            >
-                OK
             </button>
         </div>
     </div>
