@@ -7,6 +7,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.animateDecay
 import androidx.compose.animation.core.FloatExponentialDecaySpec
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -21,11 +27,14 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -44,6 +53,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.outlined.DirectionsBus
+import androidx.compose.material.icons.outlined.DirectionsBike
+import androidx.compose.material.icons.outlined.Accessible
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.Search
@@ -61,6 +72,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextField
@@ -71,6 +83,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -116,6 +129,8 @@ import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+private const val DEBUG_MODE = false
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -129,7 +144,11 @@ class MainActivity : ComponentActivity() {
 private fun TransportApp(viewModel: TransitViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     var panel by remember { mutableStateOf<Panel?>(null) }
+    var displayedVehicle by remember { mutableStateOf<Vehicle?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    LaunchedEffect(state.selectedVehicle) {
+        state.selectedVehicle?.let { displayedVehicle = it }
+    }
 
     Box(Modifier.fillMaxSize()) {
         TransitMap(state, viewModel::selectStop, viewModel::selectVehicle)
@@ -145,7 +164,17 @@ private fun TransportApp(viewModel: TransitViewModel = viewModel()) {
                 }
             }
         }
-        if (state.selectedVehicle != null) VehicleCard(state.selectedVehicle!!, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 144.dp), onClose = { viewModel.selectVehicle(null) })
+        AnimatedVisibility(
+            visible = state.selectedVehicle != null,
+            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 144.dp),
+            enter = fadeIn(tween(160)) + slideInVertically(tween(160)) { it / 10 },
+            exit = fadeOut(tween(130)) + slideOutVertically(tween(130)) { it / 10 },
+        ) {
+            displayedVehicle?.let { vehicle ->
+                val routeLabel = state.snapshot.routes.firstOrNull { it.id == vehicle.routeId }?.shortName ?: vehicle.routeId.toString()
+                VehicleCard(vehicle, routeLabel, onClose = { viewModel.selectVehicle(null) })
+            }
+        }
         UpdateControl(
             state = state,
             onRefresh = viewModel::refreshVehicles,
@@ -226,7 +255,7 @@ private fun RoutesSheet(state: TransitUiState, viewModel: TransitViewModel, favo
     val visibleRoutes = state.snapshot.routes.filter { route ->
         (!favoritesOnly || route.id in state.favorites) && (query.isBlank() || route.shortName.contains(query, true) || route.longName.contains(query, true))
     }
-    Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f).padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+    Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f).imePadding().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
         Text(if (favoritesOnly) "Favorite routes" else "Routes", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(if (state.selectedRoutes.isEmpty()) "All routes are visible" else "${state.selectedRoutes.size} selected", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
         TextField(
@@ -272,22 +301,37 @@ private fun RouteItem(route: Route, selected: Boolean, favorite: Boolean, onTogg
 }
 
 @Composable
-private fun VehicleCard(vehicle: Vehicle, modifier: Modifier, onClose: () -> Unit) {
+private fun VehicleCard(vehicle: Vehicle, routeLabel: String, onClose: () -> Unit) {
     val dark = isSystemInDarkTheme()
     val titleColor = if (dark) Color.White else MaterialTheme.colorScheme.onSurface
-    Card(modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f), contentColor = titleColor)) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f), contentColor = titleColor)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
             Icon(Icons.Outlined.DirectionsBus, null, tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.padding(start = 12.dp).weight(1f)) {
                 Text("Vehicle ${vehicle.label}", fontWeight = FontWeight.Bold, color = titleColor)
-                Text("Route ${vehicle.routeId} · ${vehicle.speed.roundToInt()} km/h · ${relativeTime(vehicle.timestamp)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("Bike: ${vehicle.bikeAccessible.ifBlank { "N/A" }} · Wheelchair: ${vehicle.wheelchairAccessible.ifBlank { "N/A" }}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Route $routeLabel · ${vehicle.speed.roundToInt()} km/h · ${relativeTime(vehicle.timestamp)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(Modifier.padding(top = 5.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    VehicleAccessIcon(Icons.Outlined.DirectionsBike, "Bike access", vehicle.bikeAccessible)
+                    VehicleAccessIcon(Icons.Outlined.Accessible, "Wheelchair access", vehicle.wheelchairAccessible)
+                }
             }
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close vehicle") }
         }
     }
 }
 
+@Composable
+private fun VehicleAccessIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String) {
+    val available = value.equals("yes", true) || value == "1" || value.equals("true", true)
+    Icon(
+        icon,
+        contentDescription = "$label: ${value.ifBlank { "unknown" }}",
+        modifier = Modifier.size(18.dp),
+        tint = if (available) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StopSheet(state: TransitUiState, viewModel: TransitViewModel) {
     val stop = state.selectedStop ?: return
@@ -298,8 +342,10 @@ private fun StopSheet(state: TransitUiState, viewModel: TransitViewModel) {
     }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
         Text(stop.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("Stop ${stop.id}${stop.code.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("${"%.5f".format(stop.latitude)}, ${"%.5f".format(stop.longitude)} · ${stopLocationType(stop.locationType)}", Modifier.padding(top = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (DEBUG_MODE) {
+            Text("ID ${stop.id}${stop.code.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${"%.5f".format(stop.latitude)}, ${"%.5f".format(stop.longitude)} · ${stopLocationType(stop.locationType)}", Modifier.padding(top = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         if (state.arrivals == null || state.timeline == null) {
             Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -308,11 +354,13 @@ private fun StopSheet(state: TransitUiState, viewModel: TransitViewModel) {
         }
         Text("Open routes", Modifier.padding(top = 20.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         routeInfo?.let { info ->
-            Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(selected = info.routes.all { it in state.selectedRoutes } && state.selectedRoutes.isNotEmpty(), onClick = { viewModel.showOnlyRoutes(info.routes) }, label = { Text("All") })
-                info.routes.take(8).forEach { routeId ->
-                    val route = state.snapshot.routes.firstOrNull { it.id == routeId }
-                    FilterChip(selected = state.selectedRoutes.isEmpty() || routeId in state.selectedRoutes, onClick = { viewModel.toggleRoute(routeId) }, label = { Text(route?.shortName ?: routeId.toString()) })
+            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+                FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    FilterChip(selected = info.routes.all { it in state.selectedRoutes } && state.selectedRoutes.isNotEmpty(), onClick = { viewModel.showOnlyRoutes(info.routes) }, label = { Text("All") })
+                    info.routes.forEach { routeId ->
+                        val route = state.snapshot.routes.firstOrNull { it.id == routeId }
+                        FilterChip(selected = state.selectedRoutes.isEmpty() || routeId in state.selectedRoutes, onClick = { viewModel.toggleRoute(routeId) }, label = { Text(route?.shortName ?: routeId.toString()) })
+                    }
                 }
             }
             Text("${info.routes.size} routes · ${info.scheduledTrips} scheduled trips", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
